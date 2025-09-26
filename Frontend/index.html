@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="es" class="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GlutenFree ERP</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+<div class="layout">
+  <!-- ========== Sidebar ========== -->
+  <aside class="sidebar" role="navigation" aria-label="Menú principal">
+    <div class="logo">
+      <span class="mark">GF</span>
+      <div class="brand">
+        <strong>GlutenFree</strong>
+        <small>ERP</small>
+      </div>
+    </div>
+    <nav class="menu">
+      <a href="#/dashboard" class="item active"><span class="icon">📊</span><span>Dashboard</span></a>
+      <a href="#/uom" class="item"><span class="icon">📐</span><span>Unidades (UOM)</span></a>
+      <a href="#/productos" class="item"><span class="icon">🧩</span><span>Productos</span></a>
+      <a href="#/contactos" class="item"><span class="icon">👥</span><span>Contactos</span></a>
+      <a href="#/ventas" class="item"><span class="icon">🧾</span><span>Ventas</span></a>
+      <a href="#/compras" class="item"><span class="icon">🧾</span><span>Compras</span></a>
+      <a href="#/recetas" class="item"><span class="icon">🥣</span><span>Recetas</span></a>
+      <a href="#/produccion" class="item"><span class="icon">🏭</span><span>Producción</span></a>
+      <a href="#/inventario" class="item"><span class="icon">📦</span><span>Inventario</span></a>
+      <a href="#/finanzas" class="item"><span class="icon">💰</span><span>Finanzas</span></a>
+    </nav>
+    <footer class="menu-footer">
+      <small>&copy; <span id="year"></span> GlutenFree</small>
+    </footer>
+  </aside>
+
+  <!-- ========== Main ========== -->
+  <main class="main">
+    <header class="topbar">
+      <div class="left">
+        <button id="themeToggle" class="icon-btn" title="Cambiar tema" aria-label="Cambiar tema">🌓</button>
+      </div>
+      <div class="center">
+        <input id="globalSearch" class="search" type="search" placeholder="Buscar productos, clientes, proveedores…" aria-label="Búsqueda global" />
+        <button id="searchBtn" class="btn">Buscar</button>
+      </div>
+      <div class="right">
+        <button id="quickCreateBtn" class="btn-primary">+ Crear</button>
+      </div>
+    </header>
+
+    <!-- Aquí se renderizan las pantallas por ruta -->
+    <section id="view" class="view" role="region" aria-live="polite"></section>
+  </main>
+</div>
+
+<!-- ========== Modal ========== -->
+<dialog id="modal" class="modal" aria-labelledby="modalTitle">
+  <form method="dialog" class="modal-card" novalidate>
+    <header class="modal-header">
+      <h3 id="modalTitle">Título</h3>
+      <button id="modalCloseX" class="icon-btn" type="button" aria-label="Cerrar">✕</button>
+    </header>
+    <div id="modalBody" class="modal-body"></div>
+    <footer class="modal-footer">
+      <button id="modalCancel" class="btn" type="button">Cancelar</button>
+      <button id="modalPrimary" class="btn-primary" type="submit">Guardar</button>
+    </footer>
+  </form>
+</dialog>
+
+<!-- ========== Toasts ========== -->
+<div id="toastContainer" class="toasts" aria-live="polite" aria-atomic="true"></div>
+
+<script>
+  // Opcional: define window.API_BASE si tu API no es http://localhost:8000
+  // window.API_BASE = 'https://tu-dominio.com';
+  document.getElementById('year').textContent = new Date().getFullYear();
+</script>
+<script src="./app.js"></script>
+</body>
+</html>
