@@ -1,32 +1,65 @@
-from fastapi import APIRouter, Depends, Query
+# app/routers/productos.py
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import text
-from ..utils.deps import db_dep
+from sqlalchemy import select
+from typing import List
+from decimal import Decimal
+from ..db import get_db
+from .. import models
+from ..schemas import ProductoCreate, ProductoUpdate, ProductoOut
 
-router = APIRouter()
+router = APIRouter(prefix="/productos", tags=["productos"])
 
-@router.get("/")
-def list_productos(
-    tipo: str | None = Query(None, regex="^(MP|PT)$"),
-    q: str | None = Query(None),
-    db: Session = Depends(db_dep)
-):
-    base = "SELECT id, sku, nombre, tipo, uom_base_id, activo FROM producto WHERE 1=1"
-    params = {}
-    if tipo:
-        base += " AND tipo = :tipo"; params["tipo"] = tipo
-    if q:
-        base += " AND (sku LIKE :q OR nombre LIKE :q)"; params["q"] = f"%{q}%"
-    base += " ORDER BY nombre"
-    rows = db.execute(text(base), params)
-    return [dict(r) for r in rows.mappings()]
+@router.get("", response_model=List[ProductoOut])
+def list_productos(db: Session = Depends(get_db)):
+    return db.execute(select(models.Producto)).scalars().all()
 
-@router.post("/")
-def create_producto(payload: dict, db: Session = Depends(db_dep)):
-    sql = text("""
-        INSERT INTO producto (sku,nombre,tipo,uom_base_id,activo)
-        VALUES (:sku,:nombre,:tipo,:uom_base_id, COALESCE(:activo,1))
-    """)
-    db.execute(sql, payload); db.commit()
-    new_id = db.execute(text("SELECT LAST_INSERT_ID()")).scalar()
-    return {"id": new_id}
+def _validate_mp(tipo: str, costo_estandar_crc):
+    if tipo == "MP":
+        if costo_estandar_crc is None:
+            raise HTTPException(status_code=400,
+                detail="Para Materia Prima (MP) es obligatorio 'costo_estandar_crc' (hasta que existan compras).")
+        try:
+            dec = Decimal(str(costo_estandar_crc))
+        except Exception:
+            raise HTTPException(status_code=400, detail="costo_estandar_crc inválido.")
+        if dec < 0:
+            raise HTTPException(status_code=400, detail="costo_estandar_crc no puede ser negativo.")
+
+@router.post("", response_model=ProductoOut)
+def create_producto(payload: ProductoCreate, db: Session = Depends(get_db)):
+    sku = payload.sku or f"AUTO-{abs(hash(payload.nombre))%100000:05d}"
+    _validate_mp(payload.tipo, payload.costo_estandar_crc)
+
+    prod = models.Producto(
+        sku=sku,
+        nombre=payload.nombre,
+        tipo=payload.tipo,
+        uom_base_id=payload.uom_base_id,
+        activo=bool(payload.activo) if payload.activo is not None else True,
+        precio_venta_crc=payload.precio_venta_crc,
+        costo_estandar_crc=payload.costo_estandar_crc
+    )
+    db.add(prod)
+    db.commit()
+    db.refresh(prod)
+    return prod
+
+@router.put("/{producto_id}", response_model=ProductoOut)
+def update_producto(producto_id: int, payload: ProductoUpdate, db: Session = Depends(get_db)):
+    prod = db.get(models.Producto, producto_id)
+    if not prod:
+        raise HTTPException(status_code=404, detail="Producto no encontrado")
+
+    data = payload.dict(exclude_unset=True)
+    tipo_dest = data.get("tipo", prod.tipo)
+    costo_dest = data.get("costo_estandar_crc", prod.costo_estandar_crc)
+    _validate_mp(tipo_dest, costo_dest)
+
+    for f, v in data.items():
+        setattr(prod, f, v)
+
+    db.add(prod)
+    db.commit()
+    db.refresh(prod)
+    return prod

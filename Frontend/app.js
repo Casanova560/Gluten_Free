@@ -12,6 +12,7 @@ const $$ = (q, el=document) => [...el.querySelectorAll(q)];
 const Toast = (() => {
   const cont = $('#toastContainer');
   return (msg, type='info') => {
+    if (!cont) return alert(`${type.toUpperCase()}: ${msg}`);
     const t = document.createElement('div');
     t.className = `toast ${type}`;
     t.textContent = msg;
@@ -30,9 +31,9 @@ const Modal = (() => {
   const btnCloseX = $('#modalCloseX');
   let onOk = null;
 
-  const safeClose = (e) => { e?.preventDefault?.(); dlg.close(); };
+  const safeClose = (e) => { e?.preventDefault?.(); dlg?.close?.(); };
 
-  primary.addEventListener('click', (e) => {
+  primary?.addEventListener('click', (e) => {
     if (onOk) {
       e.preventDefault();
       Promise.resolve(onOk()).then(ok => {
@@ -40,13 +41,14 @@ const Modal = (() => {
       }).catch(err => Toast(err?.message || 'Error', 'error'));
     }
   });
-  btnCancel.addEventListener('click', safeClose);
-  btnCloseX.addEventListener('click', safeClose);
-  dlg.addEventListener('cancel', safeClose); // ESC
-  dlg.addEventListener('close', () => { body.innerHTML=''; onOk=null; });
+  btnCancel?.addEventListener('click', safeClose);
+  btnCloseX?.addEventListener('click', safeClose);
+  dlg?.addEventListener('cancel', safeClose); // ESC
+  dlg?.addEventListener('close', () => { if (body) body.innerHTML=''; onOk=null; });
 
   return {
     open({title: t, content, onOk: cb, okText='Guardar'}) {
+      if (!dlg) return Toast('Modal no disponible en este layout','error');
       title.textContent = t;
       body.innerHTML = '';
       body.appendChild(content);
@@ -54,7 +56,7 @@ const Modal = (() => {
       onOk = cb;
       dlg.showModal();
     },
-    close(){ dlg.close(); }
+    close(){ dlg?.close?.(); }
   };
 })();
 
@@ -70,6 +72,22 @@ const fmt = {
   date: (s) => s?.slice(0,10) || ''
 };
 const slug = (s) => (s||'').toString().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-zA-Z0-9]+/g,'-').replace(/(^-|-$)/g,'').toLowerCase();
+
+// === Nuevo: helper de costos MP (por unidad base) ===
+async function getCostosMP(ids=[]) {
+  if (!ids.length) return {};
+  try {
+    const res = await fetchJSON(api(`/costos/mp?ids=${ids.join(',')}`));
+    // Acepta {id: number} o {id: {costo_unitario_crc: number}}
+    const out = {};
+    Object.entries(res||{}).forEach(([k,v])=>{
+      out[k] = typeof v === 'number' ? v : Number(v?.costo_unitario_crc||0);
+    });
+    return out;
+  } catch {
+    return {};
+  }
+}
 
 // --- Reactive Store ---
 const Store = {
@@ -142,7 +160,8 @@ function Table({columns, rows}) {
 const routes = {};
 function route(path, renderFn){ routes[path]=renderFn; }
 function navigate(hash){
-  const view = $('#view'); view.innerHTML='';
+  const view = $('#view'); if (!view) return;
+  view.innerHTML='';
   (routes[hash] || routes['#/dashboard'])(view);
   $$('.menu a').forEach(a => a.classList.toggle('active', a.getAttribute('href')===hash));
 }
@@ -323,7 +342,7 @@ route('#/ventas', (root) => {
   const dias = Field('Días crédito', Input({name:'dias_credito', type:'number', step:'1'}));
   const nota = Field('Notas', Input({name:'nota'}));
   const actions = document.createElement('div'); actions.className='form-actions';
-  const btn = document.createElement('button'); btn.className='btn-primary'; btn.textContent='Crear venta';
+  const btn = document.createElement('button'); btn.type='submit'; btn.className='btn-primary'; btn.textContent='Crear venta';
   const cancel = document.createElement('button'); cancel.type='button'; cancel.className='btn'; cancel.textContent='Cancelar'; cancel.onclick=()=>form.reset();
   actions.append(btn,cancel);
   form.append(fecha, cliente, cond, dias, nota, actions);
@@ -374,10 +393,11 @@ route('#/ventas', (root) => {
     }catch(err){ Toast(err.message,'error'); }
   });
 
-  lines.addEventListener('change', debounce(async ()=>{
+  // Guardar línea por línea (delegación)
+  lines.addEventListener('change', debounce(async (e)=>{
     if (!ventaId) return;
-    const last = lines.lastElementChild; if(!last) return;
-    const data = Object.fromEntries($$('select,input', last).map(el=>[el.name, el.value]));
+    const row = e.target.closest('.line'); if(!row) return;
+    const data = Object.fromEntries($$('select,input', row).map(el=>[el.name, el.value]));
     if (!data.producto_id) return;
     try{
       await fetchJSON(api(`/ventas/${ventaId}/items`), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data)});
@@ -426,7 +446,7 @@ route('#/compras', (root) => {
   const dias  = Field('Días crédito', Input({name:'dias_credito', type:'number'}));
   const nota  = Field('Notas', Input({name:'nota'}));
   const actions = document.createElement('div'); actions.className='form-actions';
-  const btn   = document.createElement('button'); btn.className='btn-primary'; btn.textContent='Crear compra';
+  const btn   = document.createElement('button'); btn.type='submit'; btn.className='btn-primary'; btn.textContent='Crear compra';
   const cancel = document.createElement('button'); cancel.type='button'; cancel.className='btn'; cancel.textContent='Cancelar'; cancel.onclick=()=>form.reset();
   actions.append(btn,cancel);
   form.append(fecha, prov, cond, dias, nota, actions);
@@ -442,17 +462,43 @@ route('#/compras', (root) => {
 
   function line(){
     const row=document.createElement('div'); row.className='line';
-    const prodWrap = Field('Producto (MP)', Select({name:'producto_id', items:Store.state.productos.filter(p=>p.tipo==='MP'), required:true}));
+    const prodSel = Select({name:'producto_id', items:Store.state.productos.filter(p=>p.tipo==='MP'), required:true});
+    const prodWrap = Field('Producto (MP)', prodSel);
     const addMP = document.createElement('button'); addMP.type='button'; addMP.className='icon-btn'; addMP.textContent='＋'; addMP.title='Nuevo MP';
-    addMP.onclick=()=>quickProduct('MP', prodWrap.querySelector('select'));
+    addMP.onclick=()=>quickProduct('MP', prodSel);
     prodWrap.appendChild(addMP);
 
-    const uom  = Field('UOM', Select({name:'uom_id', items:Store.state.uoms, required:true}));
+    const uomSel  = Select({name:'uom_id', items:Store.state.uoms, required:true});
+    const uom  = Field('UOM', uomSel);
     const cant = Field('Cantidad', Input({name:'cantidad', type:'number', step:'0.000001', value:'1', required:true}));
-    const costo= Field('Costo', Input({name:'costo_unitario_crc', type:'number', step:'0.01', value:'0', required:true}));
+    const costoInput = Input({name:'costo_unitario_crc', type:'number', step:'0.01', value:'0', required:true});
+    const costo= Field('Costo', costoInput);
     const desc = Field('Desc', Input({name:'descuento_crc', type:'number', step:'0.01', value:'0'}));
     const del  = document.createElement('button'); del.type='button'; del.className='icon-btn'; del.textContent='🗑'; del.onclick=()=>{ row.remove(); calc(); };
     row.append(prodWrap, uom, cant, costo, desc, del);
+
+    // Bloquear UOM a base y proponer costo desde /costos/mp
+    row.addEventListener('change', async (e)=>{
+      if (e.target.name === 'producto_id') {
+        const pid = Number(e.target.value||0);
+        const prod = Store.state.productos.find(p=>p.id===pid);
+        if (prod) { uomSel.value = String(prod.uom_base_id); uomSel.disabled = true; }
+        else { uomSel.disabled = false; }
+        // Traer costo sugerido para este MP
+        if (pid) {
+          const map = await getCostosMP([pid]);
+          const c = Number(map[pid] || 0);
+          if (c > 0) {
+            // si el usuario no tecleó nada aún, prefijar valor
+            if (!Number(costoInput.value)) costoInput.value = String(c);
+            // y dejar placeholder de referencia
+            costoInput.placeholder = String(c);
+          }
+        }
+        calc();
+      }
+    });
+
     row.addEventListener('input', calc);
     return row;
   }
@@ -476,10 +522,11 @@ route('#/compras', (root) => {
     }catch(e){ Toast(e.message,'error'); }
   });
 
-  lines.addEventListener('change', debounce(async ()=>{
+  // Delegación para cada fila
+  lines.addEventListener('change', debounce(async (e)=>{
     if (!compraId) return;
-    const last=lines.lastElementChild; if(!last) return;
-    const data=Object.fromEntries($$('select,input',last).map(el=>[el.name, el.value]));
+    const row=e.target.closest('.line'); if(!row) return;
+    const data=Object.fromEntries($$('select,input',row).map(el=>[el.name, el.value]));
     if (!data.producto_id) return;
     try{
       await fetchJSON(api(`/compras/${compraId}/items`), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data)});
@@ -512,6 +559,7 @@ route('#/compras', (root) => {
             const ph = document.createElement('option'); ph.value=''; ph.textContent='Seleccione…'; selectEl.appendChild(ph);
             Store.state.productos.filter(p=>p.tipo==='MP').forEach(p=>selectEl.appendChild(new Option(p.nombre, p.id)));
             selectEl.value = Store.state.productos.find(p=>p.nombre===payload.nombre)?.id || '';
+            selectEl.dispatchEvent(new Event('change'));
           }
           Toast('Producto creado','success');
         }catch(e){ Toast(e.message,'error'); return false; }
@@ -540,13 +588,20 @@ route('#/recetas', (root)=>{
   }
   renderList();
 
-  // Panel de Costeo de receta
+  // === Costeo de receta (usa costos base desde compras) ===
   const costPanel = document.createElement('div'); costPanel.className='panel';
   costPanel.innerHTML = `
     <h3>Costeo de receta</h3>
     <div class="form-grid">
       <label class="field"><span>Receta</span><select name="receta_sel"></select></label>
       <label class="field"><span>Rendimiento (opcional)</span><input name="rend" type="number" step="0.000001" placeholder="Si vacío, usa salidas de la receta"></label>
+      <label class="field"><span>Indirectos</span>
+        <select name="modo_ind">
+          <option value="global">Usar % global</option>
+          <option value="custom">Usar % personalizado</option>
+        </select>
+      </label>
+      <label class="field"><span>% personalizado</span><input name="pct" type="number" step="0.01" placeholder="18 = 18%" disabled></label>
       <div class="form-actions">
         <button id="btnCostearReceta" class="btn-primary">Calcular</button>
       </div>
@@ -556,37 +611,100 @@ route('#/recetas', (root)=>{
   `;
   root.appendChild(costPanel);
 
+  // Cargar recetas y config de % global
+  let globalPct = 0; // 0.18 = 18%
   (async ()=>{
-    const recetas = await fetchJSON(api('/recetas')).catch(()=>[]);
+    const [recetas, cfg] = await Promise.all([
+      fetchJSON(api('/recetas')).catch(()=>[]),
+      fetchJSON(api('/finanzas/config/indirectos')).catch(()=>({pct:0}))
+    ]);
     const sel = costPanel.querySelector('select[name="receta_sel"]');
     sel.innerHTML = '<option value="">Seleccione…</option>';
     recetas.forEach(r => sel.appendChild(new Option(r.nombre, r.id)));
+    globalPct = Number(cfg.pct || 0);
+    costPanel.querySelector('input[name="pct"]').placeholder = `${(globalPct*100).toFixed(2)} (global)`;
   })();
+
+  // habilitar/deshabilitar % personalizado
+  costPanel.querySelector('select[name="modo_ind"]').onchange = (e)=>{
+    const en = e.target.value === 'custom';
+    const pct = costPanel.querySelector('input[name="pct"]');
+    pct.disabled = !en;
+    if (!en) pct.value = '';
+  };
+
+  const normPct = (p)=> {
+    if (p == null || p === '') return null;
+    const n = Number(p);
+    if (!isFinite(n) || n < 0) return null;
+    return n > 1 ? (n/100) : n;
+  };
 
   costPanel.querySelector('#btnCostearReceta').onclick = async ()=>{
     const rid = Number(costPanel.querySelector('select[name="receta_sel"]').value || 0);
     if (!rid) return Toast('Elegí una receta','error');
-    const rend = costPanel.querySelector('input[name="rend"]').value;
-    const q = rend ? `?rendimiento=${encodeURIComponent(rend)}` : '';
+    const rendInput = costPanel.querySelector('input[name="rend"]').value;
+    const custom = costPanel.querySelector('select[name="modo_ind"]').value === 'custom';
+    const pctInput = costPanel.querySelector('input[name="pct"]').value;
+
     try{
-      const data = await fetchJSON(api(`/costeo/recetas/${rid}${q}`));
+      // Traemos detalle de receta (ingredientes con cantidades)
+      const data = await fetchJSON(api(`/recetas/${rid}/ingredientes`)).catch(()=>[]);
+      const ingredientes = Array.isArray(data) ? data : (data.ingredientes || []);
+
+      // Costos por MP desde compras (map id -> costo por unidad base)
+      const ids = [...new Set(ingredientes.map(i=>Number(i.producto_id)).filter(Boolean))];
+      const costos = await getCostosMP(ids);
+
+      // Calcular costo por ítem (costo_u_base * cantidad)
+      const rows = ingredientes.map(it => {
+        const unit = (typeof costos[it.producto_id] === 'number') ? Number(costos[it.producto_id]||0) : Number(it.costo_unitario_crc||0);
+        const qty  = Number(it.cantidad || 0);
+        const total = unit * qty;
+        return {
+          ...it,
+          nombre: it.nombre || (Store.state.productos.find(p=>p.id===Number(it.producto_id))?.nombre || `#${it.producto_id}`),
+          costo_unitario_crc: unit,
+          costo_total_crc: total
+        };
+      });
+
+      const directo = rows.reduce((acc, r)=> acc + Number(r.costo_total_crc || 0), 0);
+
+      // % indirecto
+      const p = custom ? (normPct(pctInput) ?? globalPct) : globalPct;
+      const indirecto = directo * (p || 0);
+      const total = directo + indirecto;
+
+      // Rendimiento: usar salidas de la receta si no dieron uno manual
+      let rendimiento = Number(rendInput||0);
+      if (!rendimiento) {
+        const outs = await fetchJSON(api(`/recetas/${rid}/salidas`)).catch(()=>[]);
+        rendimiento = (outs || []).reduce((a,b)=> a + Number(b.rendimiento || b.cantidad || 0), 0);
+      }
+      const unitario = (rendimiento && rendimiento > 0) ? (total / rendimiento) : null;
+
+      // KPIs
       const kpi = costPanel.querySelector('#recetaCostKPI'); kpi.innerHTML='';
       const mk = (t,v)=>{ const c=document.createElement('div'); c.className='card kpi'; c.innerHTML=`<h3>${t}</h3><div class="big">${fmt.money(v)}</div>`; return c; };
       kpi.append(
-        mk('Directo', data.costo_directo_crc),
-        mk('Indirecto asignado', data.costo_indirecto_asignado_crc),
-        mk('Total receta', data.costo_total_crc),
-        mk('Unitario estimado', data.unitario_crc ?? 0)
+        mk('Directo', directo),
+        mk('Indirecto', indirecto),
+        mk('Total receta', total),
+        mk('Unitario estimado', unitario ?? 0)
       );
+
+      // Tabla
       costPanel.querySelector('#recetaCostTable').innerHTML = '';
       costPanel.querySelector('#recetaCostTable').appendChild(
         Table({columns:[
-          {key:'nombre',label:'Ingrediente'},
+          {key:'nombre',label:'Ingrediente / MP'},
           {key:'cantidad',label:'Cant.'},
           {key:'costo_unitario_crc',label:'Costo u.',format:fmt.money},
           {key:'costo_total_crc',label:'Costo total',format:fmt.money}
-        ], rows: data.ingredientes})
+        ], rows})
       );
+
     }catch(e){ Toast(e.message,'error'); }
   };
 
@@ -616,23 +734,43 @@ route('#/recetas', (root)=>{
 
     const ingRow=()=> {
       const row=document.createElement('div'); row.className='line';
-      const mpSel = Field('MP', Select({name:'producto_id', items:Store.state.productos.filter(p=>p.tipo==='MP'), required:true}));
-      const plus = document.createElement('button'); plus.type='button'; plus.className='icon-btn'; plus.textContent='＋'; plus.title='Nuevo MP'; plus.onclick=()=>quickProduct('MP', mpSel.querySelector('select'));
-      mpSel.appendChild(plus);
-      row.append(
-        mpSel,
-        Field('UOM', Select({name:'uom_id', items:Store.state.uoms, required:true})),
-        Field('Cantidad', Input({name:'cantidad', type:'number', step:'0.000001', required:true, value:'1'}))
-      );
+      const mpSel = Select({name:'producto_id', items:Store.state.productos.filter(p=>p.tipo==='MP'), required:true});
+      const mpFld = Field('MP', mpSel);
+      const uomSel = Select({name:'uom_id', items:Store.state.uoms, required:true});
+      const uomFld = Field('UOM', uomSel);
+      const qty = Field('Cantidad', Input({name:'cantidad', type:'number', step:'0.000001', required:true, value:'1'}));
+      row.append(mpFld, uomFld, qty);
+
+      // bloquear UOM a la UOM base del producto
+      row.addEventListener('change', (e)=>{
+        if (e.target.name === 'producto_id') {
+          const pid = Number(e.target.value||0);
+          const prod = Store.state.productos.find(p=>p.id===pid);
+          if (prod) { uomSel.value = String(prod.uom_base_id); uomSel.disabled = true; }
+          else { uomSel.disabled = false; }
+        }
+      });
+
       return row;
     };
+
     const outRow=()=> {
       const row=document.createElement('div'); row.className='line';
+      const ptSel = Select({name:'producto_id', items:Store.state.productos.filter(p=>p.tipo==='PT'), required:true});
+      const uomSel = Select({name:'uom_id', items:Store.state.uoms, required:true});
       row.append(
-        Field('PT', Select({name:'producto_id', items:Store.state.productos.filter(p=>p.tipo==='PT'), required:true})),
-        Field('UOM', Select({name:'uom_id', items:Store.state.uoms, required:true})),
+        Field('PT', ptSel),
+        Field('UOM', uomSel),
         Field('Rendimiento', Input({name:'rendimiento', type:'number', step:'0.000001', required:true, value:'1'}))
       );
+      row.addEventListener('change', (e)=>{
+        if (e.target.name === 'producto_id') {
+          const pid = Number(e.target.value||0);
+          const prod = Store.state.productos.find(p=>p.id===pid);
+          if (prod) { uomSel.value = String(prod.uom_base_id); uomSel.disabled = true; }
+          else { uomSel.disabled = false; }
+        }
+      });
       return row;
     };
 
@@ -654,7 +792,7 @@ route('#/recetas', (root)=>{
             const data = Object.fromEntries($$('select,input', row).map(el=>[el.name, el.value]));
             await fetchJSON(api(`/recetas/${rec.id}/salidas`), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data)});
           }
-          Toast('Receta creada','success');
+          Toast('Receta creada','success'); renderList();
         }catch(e){ Toast(e.message,'error'); return false; }
       }
     });
@@ -678,11 +816,13 @@ route('#/recetas', (root)=>{
             await fetchJSON(api('/productos'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
             const productos = await fetchJSON(api('/productos')); Store.set({productos});
             if (selectEl) {
+              // refrescar opciones respetando tipo
               selectEl.innerHTML='';
               const ph = document.createElement('option'); ph.value=''; ph.textContent='Seleccione…'; selectEl.appendChild(ph);
               const filter = tipo==='MP' ? (p)=>p.tipo==='MP' : (p)=>p.tipo==='PT';
               Store.state.productos.filter(filter).forEach(p=>selectEl.appendChild(new Option(p.nombre, p.id)));
               selectEl.value = Store.state.productos.find(p=>p.nombre===payload.nombre)?.id || '';
+              selectEl.dispatchEvent(new Event('change'));
             }
             Toast('Producto creado','success');
           }catch(e){ Toast(e.message,'error'); return false; }
@@ -696,7 +836,7 @@ route('#/produccion', (root)=>{
   const form = document.createElement('form'); form.className='panel form-grid';
   const fecha = Field('Fecha', Input({name:'fecha', type:'date', required:true, value: today()}));
   const receta= Field('Receta', Select({name:'receta_id', items:[], placeholder:'(Ninguna)'}));
-  const btn = document.createElement('button'); btn.className='btn-primary'; btn.textContent='Crear tanda';
+  const btn = document.createElement('button'); btn.type='submit'; btn.className='btn-primary'; btn.textContent='Crear tanda';
   const cancel = document.createElement('button'); cancel.type='button'; cancel.className='btn'; cancel.textContent='Cancelar'; cancel.onclick=()=>form.reset();
   const actions = document.createElement('div'); actions.className='form-actions'; actions.append(btn,cancel);
   form.append(fecha, receta, actions);
@@ -725,7 +865,7 @@ route('#/produccion', (root)=>{
   consumo.append(cLines, addC); salida.append(sLines, addS);
   cols.append(consumo, salida); panel.append(cols); root.appendChild(panel);
 
-  // Costeo de Tanda
+  // Costeo de Tanda (delegado al backend si existe)
   const costBox = document.createElement('div'); costBox.className='panel';
   costBox.innerHTML = `
     <h3>Costeo de tanda</h3>
@@ -754,27 +894,49 @@ route('#/produccion', (root)=>{
         {key:'costo_total_crc',label:'Costo total',format:fmt.money},
       ], rows});
       const cont = costBox.querySelector('#tandaCostTable'); cont.innerHTML=''; cont.appendChild(tbl);
-    }catch(e){ /* silencioso hasta que haya líneas */ }
+    }catch(e){ /* silencioso */ }
   }
 
+  // Filas con UOM bloqueada a la base del producto
   const cRow=()=> {
     const row=document.createElement('div'); row.className='line';
-    const mpSel = Field('MP', Select({name:'producto_id', items:Store.state.productos.filter(p=>p.tipo==='MP'), required:true}));
-    const plus = document.createElement('button'); plus.type='button'; plus.className='icon-btn'; plus.textContent='＋'; plus.title='Nuevo MP'; plus.onclick=()=>quickProduct('MP', mpSel.querySelector('select'));
-    mpSel.appendChild(plus);
+    const mpSel = Select({name:'producto_id', items:Store.state.productos.filter(p=>p.tipo==='MP'), required:true});
+    const mpFld = Field('MP', mpSel);
+    const uomSel = Select({name:'uom_id', items:Store.state.uoms, required:true});
+    const uomFld = Field('UOM', uomSel);
     row.append(
-      mpSel,
-      Field('UOM', Select({name:'uom_id', items:Store.state.uoms, required:true})),
+      mpFld,
+      uomFld,
       Field('Cantidad', Input({name:'cantidad', type:'number', step:'0.000001', value:'1', required:true}))
-    ); return row;
+    );
+    row.addEventListener('change', (e)=>{
+      if (e.target.name === 'producto_id') {
+        const pid = Number(e.target.value||0);
+        const prod = Store.state.productos.find(p=>p.id===pid);
+        if (prod) { uomSel.value = String(prod.uom_base_id); uomSel.disabled = true; }
+        else { uomSel.disabled = false; }
+      }
+    });
+    return row;
   };
   const sRow=()=> {
     const row=document.createElement('div'); row.className='line';
+    const ptSel = Select({name:'producto_id', items:Store.state.productos.filter(p=>p.tipo==='PT'), required:true});
+    const uomSel = Select({name:'uom_id', items:Store.state.uoms, required:true});
     row.append(
-      Field('PT', Select({name:'producto_id', items:Store.state.productos.filter(p=>p.tipo==='PT'), required:true})),
-      Field('UOM', Select({name:'uom_id', items:Store.state.uoms, required:true})),
+      Field('PT', ptSel),
+      Field('UOM', uomSel),
       Field('Cantidad', Input({name:'cantidad', type:'number', step:'0.000001', value:'1', required:true}))
-    ); return row;
+    );
+    row.addEventListener('change', (e)=>{
+      if (e.target.name === 'producto_id') {
+        const pid = Number(e.target.value||0);
+        const prod = Store.state.productos.find(p=>p.id===pid);
+        if (prod) { uomSel.value = String(prod.uom_base_id); uomSel.disabled = true; }
+        else { uomSel.disabled = false; }
+      }
+    });
+    return row;
   };
 
   form.addEventListener('submit', async e=>{
@@ -812,57 +974,27 @@ route('#/produccion', (root)=>{
   addC.onclick=()=> { if (!tandaId) return Toast('Primero crea la tanda','error'); cLines.appendChild(cRow()); };
   addS.onclick=()=> { if (!tandaId) return Toast('Primero crea la tanda','error'); sLines.appendChild(sRow()); };
 
-  cLines.addEventListener('change', debounce(async ()=>{
+  // Delegación: guarda la fila que cambia
+  cLines.addEventListener('change', debounce(async (e)=>{
     if (!tandaId) return;
-    const row=cLines.lastElementChild; if(!row) return;
+    const row=e.target.closest('.line'); if(!row) return;
     const data=Object.fromEntries($$('select,input',row).map(el=>[el.name, el.value]));
     try{
       await fetchJSON(api(`/produccion/tandas/${tandaId}/consumos`), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data)});
       Toast('Consumo guardado','success');
       await refreshTandaCost();
-    }catch(e){ Toast(e.message,'error'); }
+    }catch(err){ Toast(err.message,'error'); }
   }, 400));
-  sLines.addEventListener('change', debounce(async ()=>{
+  sLines.addEventListener('change', debounce(async (e)=>{
     if (!tandaId) return;
-    const row=sLines.lastElementChild; if(!row) return;
+    const row=e.target.closest('.line'); if(!row) return;
     const data=Object.fromEntries($$('select,input',row).map(el=>[el.name, el.value]));
     try{
       await fetchJSON(api(`/produccion/tandas/${tandaId}/salidas`), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data)});
       Toast('Salida guardada','success');
       await refreshTandaCost();
-    }catch(e){ Toast(e.message,'error'); }
+    }catch(err){ Toast(err.message,'error'); }
   }, 400));
-
-  function quickProduct(tipo, selectEl){
-    const f = document.createElement('form'); f.className='form-grid';
-    f.append(
-      Field('Código interno (SKU)', Input({name:'sku', placeholder:'Opcional'})),
-      Field('Nombre', Input({name:'nombre', required:true})),
-      Field('Tipo', (()=>{ const s=Select({name:'tipo', items:[{id:'MP',nombre:'Materia Prima'},{id:'PT',nombre:'Producto Terminado'}], valueKey:'id', required:true}); s.value=tipo; return s;})()),
-      Field('UOM base', Select({name:'uom_base_id', items:Store.state.uoms, valueKey:'id', labelKey:'nombre', required:true}))
-    );
-    Modal.open({
-      title:'Nuevo producto',
-      content: f,
-      onOk: async ()=>{
-        const payload = Object.fromEntries(new FormData(f).entries());
-        if (!payload.sku) payload.sku = `${slug(payload.nombre).slice(0,12)}-${Math.random().toString(36).slice(2,6)}`.toUpperCase();
-        payload.uom_base_id = Number(payload.uom_base_id);
-        try{
-          await fetchJSON(api('/productos'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-          const productos = await fetchJSON(api('/productos')); Store.set({productos});
-          if (selectEl) {
-            selectEl.innerHTML='';
-            const ph = document.createElement('option'); ph.value=''; ph.textContent='Seleccione…'; selectEl.appendChild(ph);
-            const filter = tipo==='MP' ? (p)=>p.tipo==='MP' : (p)=>p.tipo==='PT';
-            Store.state.productos.filter(filter).forEach(p=>selectEl.appendChild(new Option(p.nombre, p.id)));
-            selectEl.value = Store.state.productos.find(p=>p.nombre===payload.nombre)?.id || '';
-          }
-          Toast('Producto creado','success');
-        }catch(e){ Toast(e.message,'error'); return false; }
-      }
-    });
-  }
 });
 
 route('#/inventario', async (root)=>{
@@ -919,38 +1051,149 @@ route('#/inventario', async (root)=>{
 });
 
 route('#/finanzas', async (root)=>{
-  const head=document.createElement('div'); head.className='panel';
-  head.innerHTML = `<b>Saldos por cobrar/pagar</b> · Se calculan <i>desde</i> las facturas de ventas/compras (contado o crédito). No duplica registros.`;
-  root.appendChild(head);
+  const tabs = document.createElement('div'); tabs.className='tabs';
+  tabs.innerHTML = `
+    <button class="active" data-t="cuentas">Cuentas</button>
+    <button data-t="indirectos">Indirectos</button>
+    <span class="spacer"></span>
+  `;
+  root.appendChild(tabs);
 
-  const cont=document.createElement('div'); cont.className='grid-2'; root.appendChild(cont);
-  const cxc = await fetchJSON(api('/finanzas/cxc')).catch(()=>[]);
-  const cxp = await fetchJSON(api('/finanzas/cxp')).catch(()=>[]);
-  cont.append(
-    Table({columns:[
-      {key:'venta_id',label:'# Venta'},
-      {key:'fecha',label:'Fecha',format:fmt.date},
-      {key:'fecha_limite',label:'Vence',format:fmt.date},
-      {key:'total_crc',label:'Total',format:fmt.money},
-      {key:'cobrado_crc',label:'Cobrado',format:fmt.money},
-      {key:'saldo_crc',label:'Saldo',format:fmt.money},
-      {key:'dias_vencido',label:'Días venc.'}
-    ], rows:cxc}),
-    Table({columns:[
-      {key:'compra_id',label:'# Compra'},
-      {key:'fecha',label:'Fecha',format:fmt.date},
-      {key:'fecha_limite',label:'Vence',format:fmt.date},
-      {key:'total_crc',label:'Total',format:fmt.money},
-      {key:'pagado_crc',label:'Pagado',format:fmt.money},
-      {key:'saldo_crc',label:'Saldo',format:fmt.money},
-      {key:'dias_vencido',label:'Días venc.'}
-    ], rows:cxp})
-  );
+  const cont = document.createElement('div'); root.appendChild(cont);
+
+  async function renderCuentas(){
+    cont.innerHTML='';
+    const head=document.createElement('div'); head.className='panel';
+    head.innerHTML = `<b>Saldos por cobrar/pagar</b> · Se calculan desde las facturas de ventas/compras (contado o crédito).`;
+    cont.appendChild(head);
+
+    const grid=document.createElement('div'); grid.className='grid-2'; cont.appendChild(grid);
+    const [cxc, cxp] = await Promise.all([
+      fetchJSON(api('/finanzas/cxc')).catch(()=>[]),
+      fetchJSON(api('/finanzas/cxp')).catch(()=>[])
+    ]);
+    grid.append(
+      Table({columns:[
+        {key:'venta_id',label:'# Venta'},
+        {key:'fecha',label:'Fecha',format:fmt.date},
+        {key:'fecha_limite',label:'Vence',format:fmt.date},
+        {key:'total_crc',label:'Total',format:fmt.money},
+        {key:'cobrado_crc',label:'Cobrado',format:fmt.money},
+        {key:'saldo_crc',label:'Saldo',format:fmt.money},
+        {key:'dias_vencido',label:'Días venc.'}
+      ], rows:cxc}),
+      Table({columns:[
+        {key:'compra_id',label:'# Compra'},
+        {key:'fecha',label:'Fecha',format:fmt.date},
+        {key:'fecha_limite',label:'Vence',format:fmt.date},
+        {key:'total_crc',label:'Total',format:fmt.money},
+        {key:'pagado_crc',label:'Pagado',format:fmt.money},
+        {key:'saldo_crc',label:'Saldo',format:fmt.money},
+        {key:'dias_vencido',label:'Días venc.'}
+      ], rows:cxp})
+    );
+  }
+
+  async function renderIndirectos(){
+    cont.innerHTML='';
+    const wrap = document.createElement('div'); wrap.className='grid-2'; cont.appendChild(wrap);
+
+    // Config % global
+    const cfgCard = document.createElement('div'); cfgCard.className='card';
+    cfgCard.innerHTML = `
+      <h3>Configuración de indirectos</h3>
+      <div class="form-grid">
+        <label class="field"><span>Método</span>
+          <select id="indMethod">
+            <option value="PORCENTAJE_GLOBAL">Porcentaje global sobre costo directo</option>
+          </select>
+        </label>
+        <label class="field"><span>% Global</span>
+          <input id="indPct" type="number" step="0.01" placeholder="18 = 18%">
+        </label>
+        <div class="form-actions">
+          <button id="btnSaveCfg" class="btn-primary">Guardar</button>
+        </div>
+      </div>
+      <small class="muted">Este % se puede sobreescribir al costear una receta o tanda.</small>
+    `;
+    wrap.appendChild(cfgCard);
+
+    // CRUD partidas indirectas
+    const crud = document.createElement('div'); crud.className='card';
+    crud.innerHTML = `
+      <h3>Partidas de costos indirectos (mensuales)</h3>
+      <form id="formIndirecto" class="form-grid">
+        <label class="field"><span>Nombre</span><input name="nombre" required placeholder="Alquiler, Luz, Limpieza…"></label>
+        <label class="field"><span>Monto mensual (CRC)</span><input name="monto_mensual_crc" type="number" step="0.01" required></label>
+        <label class="field"><span>Activo</span>
+          <select name="activo"><option value="1">Sí</option><option value="0">No</option></select>
+        </label>
+        <div class="form-actions">
+          <button class="btn-primary" type="submit">Agregar</button>
+        </div>
+      </form>
+      <div id="indList" style="margin-top:10px"></div>
+    `;
+    wrap.appendChild(crud);
+
+    // cargar config
+    let cfg = await fetchJSON(api('/finanzas/config/indirectos')).catch(()=>({method:'PORCENTAJE_GLOBAL', pct:0}));
+    $('#indMethod', cfgCard).value = cfg.method || 'PORCENTAJE_GLOBAL';
+    $('#indPct', cfgCard).value = (Number(cfg.pct||0)*100).toFixed(2);
+
+    $('#btnSaveCfg', cfgCard).onclick = async ()=>{
+      const body = { method: $('#indMethod', cfgCard).value, pct: Number($('#indPct', cfgCard).value||0)/100 };
+      try{
+        await fetchJSON(api('/finanzas/config/indirectos'), {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+        Toast('Configuración guardada','success');
+      }catch(e){ Toast(e.message,'error'); }
+    };
+
+    // listar partidas
+    async function loadList(){
+      const items = await fetchJSON(api('/finanzas/indirectos')).catch(()=>[]);
+      const box = $('#indList', crud); box.innerHTML='';
+      box.appendChild(Table({columns:[
+        {key:'nombre',label:'Nombre'},
+        {key:'monto_mensual_crc',label:'Monto',format:fmt.money},
+        {key:'activo',label:'Activo'},
+      ], rows:items}));
+    }
+    await loadList();
+
+    // alta
+    $('#formIndirecto', crud).addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      const payload = Object.fromEntries(new FormData(e.target).entries());
+      payload.monto_mensual_crc = Number(payload.monto_mensual_crc||0);
+      payload.activo = Number(payload.activo||1);
+      try{
+        await fetchJSON(api('/finanzas/indirectos'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+        e.target.reset();
+        await loadList();
+        Toast('Partida creada','success');
+      }catch(err){ Toast(err.message,'error'); }
+    });
+  }
+
+  function switchTab(kind){
+    tabs.querySelectorAll('button[data-t]').forEach(b=>b.classList.toggle('active', b.dataset.t===kind));
+    if (kind==='indirectos') renderIndirectos(); else renderCuentas();
+  }
+
+  tabs.addEventListener('click', (e)=>{
+    if (e.target.matches('[data-t]')) switchTab(e.target.dataset.t);
+  });
+
+  switchTab('cuentas');
 });
 
-// Búsqueda global
-$('#searchBtn').onclick = ()=> doSearch();
-$('#globalSearch').addEventListener('keydown', e=>{ if (e.key==='Enter') doSearch(); });
+// Búsqueda global (defensiva)
+const searchBtn = $('#searchBtn');
+if (searchBtn) searchBtn.onclick = ()=> doSearch();
+const globalSearch = $('#globalSearch');
+if (globalSearch) globalSearch.addEventListener('keydown', e=>{ if (e.key==='Enter') doSearch(); });
 function cardList(title, data, keys){
   const card=document.createElement('div'); card.className='card';
   card.innerHTML = `<h3>${title}</h3>`;
@@ -962,12 +1205,13 @@ function cardList(title, data, keys){
   card.appendChild(ul); return card;
 }
 async function doSearch(){
-  const q = $('#globalSearch').value.trim().toLowerCase();
+  const q = $('#globalSearch')?.value?.trim().toLowerCase();
   if (!q) return;
   const prods = Store.state.productos.filter(p=> (p.nombre||'').toLowerCase().includes(q) || (p.sku||'').toLowerCase().includes(q));
   const clis  = Store.state.clientes.filter(c=> (c.nombre||'').toLowerCase().includes(q));
   const provs = Store.state.proveedores.filter(p=> (p.nombre||'').toLowerCase().includes(q));
-  const view = $('#view'); view.innerHTML='';
+  const view = $('#view'); if (!view) return;
+  view.innerHTML='';
   const grid = document.createElement('div'); grid.className='grid-3';
   grid.append(
     cardList('Productos', prods, ['sku','nombre','tipo']),
@@ -978,7 +1222,8 @@ async function doSearch(){
 }
 
 // Tema
-$('#themeToggle').onclick = ()=>{
+const themeToggle = $('#themeToggle');
+if (themeToggle) themeToggle.onclick = ()=>{
   const root = document.documentElement;
   root.classList.toggle('dark'); root.classList.toggle('light');
   localStorage.setItem('theme', root.classList.contains('dark') ? 'dark' : 'light');

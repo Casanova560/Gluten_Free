@@ -1,36 +1,62 @@
-from fastapi import APIRouter, Depends
+# app/routers/finanzas.py
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import text
-from ..utils.deps import db_dep
+from sqlalchemy import select, text
+from typing import List
+from ..db import get_db
+from .. import models
+from ..schemas import (
+    CostoIndirectoCreate, CostoIndirectoOut,
+    ConfigCosteoIn, ConfigCosteoOut
+)
 
-router = APIRouter()
+router = APIRouter(prefix="/finanzas", tags=["finanzas"])
 
-@router.get("/cxc")
-def cxc(cliente_id: int | None = None, vencido: str | None = None, db: Session = Depends(db_dep)):
-    base = "SELECT * FROM v_cxc WHERE 1=1"; params = {}
-    if cliente_id:
-        base += " AND cliente_id = :cid"; params["cid"] = cliente_id
-    if vencido == "si":
-        base += " AND dias_vencido > 0"
-    rows = db.execute(text(base), params)
-    return [dict(r) for r in rows.mappings()]
+# ===== Partidas de indirectos =====
+@router.get("/indirectos", response_model=List[CostoIndirectoOut])
+def list_indirectos(db: Session = Depends(get_db)):
+    return db.execute(select(models.CostoIndirecto)).scalars().all()
 
-@router.get("/cxp")
-def cxp(proveedor_id: int | None = None, vencido: str | None = None, db: Session = Depends(db_dep)):
-    base = "SELECT * FROM v_cxp WHERE 1=1"; params = {}
-    if proveedor_id:
-        base += " AND proveedor_id = :pid"; params["pid"] = proveedor_id
-    if vencido == "si":
-        base += " AND dias_vencido > 0"
-    rows = db.execute(text(base), params)
-    return [dict(r) for r in rows.mappings()]
+@router.post("/indirectos", response_model=CostoIndirectoOut)
+def create_indirecto(payload: CostoIndirectoCreate, db: Session = Depends(get_db)):
+    row = models.CostoIndirecto(**payload.dict())
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
 
-@router.get("/cxc/tramos")
-def cxc_tramos(db: Session = Depends(db_dep)):
-    rows = db.execute(text("SELECT * FROM v_cxc_tramos"))
-    return [dict(r) for r in rows.mappings()]
+# ===== Configuración de costeo =====
+@router.get("/config/indirectos", response_model=ConfigCosteoOut)
+def get_cfg(db: Session = Depends(get_db)):
+    row = db.get(models.ConfigCosteo, 1)
+    if not row:
+        # bootstrap
+        row = models.ConfigCosteo(id=1, metodo="PCT_DIRECTO", parametro_json={"porcentaje": None})
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+    pct = None
+    if row.parametro_json and row.parametro_json.get("porcentaje") is not None:
+        pct = float(row.parametro_json["porcentaje"])
+    return ConfigCosteoOut(metodo=row.metodo, pct=pct)
 
-@router.get("/cxp/tramos")
-def cxp_tramos(db: Session = Depends(db_dep)):
-    rows = db.execute(text("SELECT * FROM v_cxp_tramos"))
-    return [dict(r) for r in rows.mappings()]
+@router.put("/config/indirectos", response_model=ConfigCosteoOut)
+def set_cfg(payload: ConfigCosteoIn, db: Session = Depends(get_db)):
+    row = db.get(models.ConfigCosteo, 1)
+    if not row:
+        row = models.ConfigCosteo(id=1)
+        db.add(row)
+    row.metodo = payload.metodo
+    pjson = row.parametro_json or {}
+    if payload.metodo == "PCT_DIRECTO":
+        # payload.pct puede venir 18 -> 18% o 0.18; normaliza
+        pct = payload.pct
+        if pct is not None and pct > 1:
+            pct = pct / 100.0
+        pjson["porcentaje"] = pct
+    else:
+        pjson["porcentaje"] = None
+    row.parametro_json = pjson
+    db.commit()
+    db.refresh(row)
+    return ConfigCosteoOut(metodo=row.metodo, pct=row.parametro_json.get("porcentaje"))

@@ -1,11 +1,27 @@
+# app/db.py
+import os
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from .config import settings
+from sqlalchemy.orm import sessionmaker, declarative_base
+from dotenv import load_dotenv
 
-engine = create_engine(settings.DB_URL, pool_pre_ping=True, future=True)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+load_dotenv()
 
-def get_db():
+DB_URL = os.getenv("DB_URL", "mysql+mysqlconnector://root:root@localhost:3306/dltaller_app")
+
+engine = create_engine(
+    DB_URL,
+    pool_pre_ping=True,
+    pool_recycle=3600,
+    echo=False
+)
+
+SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+Base = declarative_base()
+
+
+# Dependencia FastAPI
+from typing import Generator
+def get_db() -> Generator:
     db = SessionLocal()
     try:
         yield db
