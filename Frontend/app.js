@@ -489,9 +489,7 @@ route('#/compras', (root) => {
           const map = await getCostosMP([pid]);
           const c = Number(map[pid] || 0);
           if (c > 0) {
-            // si el usuario no tecleó nada aún, prefijar valor
             if (!Number(costoInput.value)) costoInput.value = String(c);
-            // y dejar placeholder de referencia
             costoInput.placeholder = String(c);
           }
         }
@@ -1063,7 +1061,7 @@ route('#/finanzas', async (root)=>{
 
   async function renderCuentas(){
     cont.innerHTML='';
-    const head=document.createElement('div'); head.className='panel';
+    const head=document.createElement('div'); head.className='card';
     head.innerHTML = `<b>Saldos por cobrar/pagar</b> · Se calculan desde las facturas de ventas/compras (contado o crédito).`;
     cont.appendChild(head);
 
@@ -1189,6 +1187,319 @@ route('#/finanzas', async (root)=>{
   switchTab('cuentas');
 });
 
+/* ---------- PLANILLAS (diario -> vista semanal) ---------- */
+route('#/planillas', async (root) => {
+  // Panel superior: crear planilla y filtros
+  const top = document.createElement('div'); top.className = 'panel';
+  top.innerHTML = `
+    <h3>Planillas (semanales)</h3>
+    <div class="form-grid">
+      <label class="field">
+        <span>Semana (inicio)</span>
+        <input name="semana_inicio" type="date" required>
+      </label>
+      <label class="field">
+        <span>Nota</span>
+        <input name="nota" placeholder="Opcional">
+      </label>
+      <div class="form-actions">
+        <button id="btnNuevaPlanilla" class="btn-primary">Crear planilla</button>
+      </div>
+    </div>
+    <div class="subpanel" style="margin-top:8px">
+      <h4>Buscar por mes</h4>
+      <div class="form-grid">
+        <label class="field"><span>Mes (YYYY-MM)</span><input name="f_mes" placeholder="2025-03"></label>
+        <div class="form-actions"><button id="btnFiltrar" class="btn">Filtrar</button></div>
+      </div>
+    </div>
+  `;
+  root.appendChild(top);
+
+  const listWrap = document.createElement('div'); listWrap.className = 'panel'; root.appendChild(listWrap);
+  const detailWrap = document.createElement('div'); detailWrap.className = 'panel'; root.appendChild(detailWrap);
+
+  async function loadList(mes=null){
+    const qs = mes ? `?mes=${encodeURIComponent(mes)}` : '';
+    const rows = await fetchJSON(api(`/planillas${qs}`)).catch(()=>[]);
+    listWrap.innerHTML = '';
+    const tbl = Table({
+      columns: [
+        {key:'id', label:'#'},
+        {key:'semana_inicio', label:'Semana', format: fmt.date},
+        {key:'nota', label:'Nota'}
+      ],
+      rows
+    });
+    listWrap.appendChild(tbl);
+    listWrap.querySelectorAll('tbody tr').forEach((tr, i) => {
+      tr.style.cursor='pointer';
+      tr.onclick=()=> openPlanilla(rows[i].id);
+    });
+  }
+
+  async function createPlanilla(){
+    const semana_inicio = top.querySelector('input[name="semana_inicio"]').value;
+    const nota = top.querySelector('input[name="nota"]').value || null;
+    if (!semana_inicio) return Toast('Elegí la fecha de inicio de semana','error');
+    try{
+      const res = await fetchJSON(api('/planillas'), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({semana_inicio, nota})
+      });
+      Toast(`Planilla #${res.id} creada`, 'success');
+      await loadList(top.querySelector('input[name="f_mes"]').value || null);
+      await openPlanilla(res.id);
+    }catch(e){ Toast(e.message, 'error'); }
+  }
+
+  $('#btnNuevaPlanilla', top).onclick = createPlanilla;
+  $('#btnFiltrar', top).onclick = async ()=>{
+    await loadList(top.querySelector('input[name="f_mes"]').value || null);
+    detailWrap.innerHTML='';
+  };
+
+  await loadList();
+
+  // ---------- Detalle de una planilla ----------
+  async function openPlanilla(id){
+    const data = await fetchJSON(api(`/planillas/${id}`)).catch(()=>null);
+    if (!data) return Toast('No se pudo cargar la planilla', 'error');
+
+    detailWrap.innerHTML = `
+      <h3>Planilla #${id} · Semana que inicia ${fmt.date(data.semana_inicio)}</h3>
+      <div class="form-grid" style="margin-bottom:8px">
+        <label class="field"><span>Empleado</span>
+          <select name="emp_sel"></select>
+        </label>
+        <label class="field"><span>Tarifa hora (CRC)</span>
+          <input name="tarifa" type="number" step="0.01" value="0">
+        </label>
+        <label class="field"><span>Rol</span>
+          <input name="rol" placeholder="Operario, Producción…">
+        </label>
+        <div class="form-actions">
+          <button id="btnAddEmp" class="btn">Agregar a planilla</button>
+        </div>
+      </div>
+
+      <div class="subpanel">
+        <h4>Factores de cálculo (vista)</h4>
+        <div class="form-grid">
+          <label class="field"><span>Factor extra</span><input name="fx" type="number" step="0.1" value="1.5"></label>
+          <label class="field"><span>Factor dobles</span><input name="fd" type="number" step="0.1" value="2.0"></label>
+          <label class="field"><span>Factor feriado</span><input name="ff" type="number" step="0.1" value="2.0"></label>
+        </div>
+      </div>
+
+      <div id="detTabla"></div>
+      <div id="resumenSemanal" style="margin-top:12px"></div>
+    `;
+
+    // cargar empleados al select
+    const sel = detailWrap.querySelector('select[name="emp_sel"]');
+    sel.innerHTML = '<option value="">Seleccione…</option>';
+    Store.state.empleados.forEach(e => sel.appendChild(new Option(e.nombre, e.id)));
+
+    $('#btnAddEmp', detailWrap).onclick = async ()=>{
+      const empleado_id = Number(sel.value || 0) || null;
+      const tarifa = Number(detailWrap.querySelector('input[name="tarifa"]').value||0);
+      const rol = detailWrap.querySelector('input[name="rol"]').value || null;
+      if (!empleado_id && !rol) return Toast('Elija empleado o escriba persona/rol', 'error');
+      try{
+        await fetchJSON(api(`/planillas/${id}/detalles`), {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({empleado_id, tarifa_hora_crc: tarifa, rol})
+        });
+        Toast('Empleado agregado', 'success');
+        await openPlanilla(id);
+      }catch(e){ Toast(e.message,'error'); }
+    };
+
+    renderDetalles(id, data);
+  }
+
+  function renderDetalles(id, data){
+    const fx = Number(detailWrap.querySelector('input[name="fx"]').value||1.5);
+    const fd = Number(detailWrap.querySelector('input[name="fd"]').value||2.0);
+    const ff = Number(detailWrap.querySelector('input[name="ff"]').value||2.0);
+
+    // Tabla de empleados con botón "Editar diario"
+    const rows = (data.detalles||[]).map(d => {
+      const z = d.resumen || {};
+      const tarifa = Number(d.tarifa_hora_crc||0);
+      const subtotal = tarifa * Number(z.reg||0); // salario base (solo horas reg)
+      const diasTrab = Number(z.dias_trab||0);
+      const salarioDiarioProm = diasTrab ? (subtotal / diasTrab) : 0;
+
+      // extras
+      const hExt = Number(z.ext||0);
+      const pxExt = tarifa * fx;
+      const totExt = hExt * pxExt;
+
+      // feriados
+      const ferDias = Number(z.feriados||0);
+      const hFeriado = Number(z.horas_feriado||0);
+      const totFeriados = hFeriado * tarifa * ff;
+
+      // dobles
+      const hDob = Number(z.dob||0);
+      const pxDob = tarifa * fd;
+      const totDob = hDob * pxDob;
+
+      const bruto = subtotal + totExt + totFeriados + totDob;
+
+      return {
+        det_id: d.id,
+        empleado: d.empleado_nombre || d.persona || '—',
+        rol: d.rol || '—',
+        tarifa,
+        diasTrab,
+        salarioDiarioProm,
+        subtotal,
+        hExt, pxExt, totExt,
+        ferDias, hFeriado, totFeriados,
+        hDob, pxDob, totDob,
+        bruto,
+        raw: d
+      };
+    });
+
+    const cont = $('#detTabla', detailWrap); cont.innerHTML='';
+    const wrap = document.createElement('div'); wrap.className='table-wrap';
+    const table = document.createElement('table'); table.className='table';
+    table.innerHTML = `
+      <thead><tr>
+        <th>Empleado</th><th>Rol</th><th>Tarifa</th>
+        <th>Días trab.</th><th>Salario diario</th><th>Subtotal (base)</th>
+        <th>HE (h)</th><th>₡/h extra</th><th>Total extras</th>
+        <th># feriados</th><th>h feriado</th><th>Total feriados</th>
+        <th>HD (h)</th><th>₡/h doble</th><th>Total dobles</th>
+        <th>SALARIO BRUTO</th>
+        <th></th>
+      </tr></thead>
+      <tbody></tbody>
+    `;
+    rows.forEach(r => {
+      const tr=document.createElement('tr');
+      tr.innerHTML = `
+        <td>${r.empleado}</td>
+        <td>${r.rol}</td>
+        <td>${fmt.money(r.tarifa)}</td>
+        <td>${r.diasTrab}</td>
+        <td>${fmt.money(r.salarioDiarioProm)}</td>
+        <td>${fmt.money(r.subtotal)}</td>
+        <td>${r.hExt}</td>
+        <td>${fmt.money(r.pxExt)}</td>
+        <td>${fmt.money(r.totExt)}</td>
+        <td>${r.ferDias}</td>
+        <td>${r.hFeriado}</td>
+        <td>${fmt.money(r.totFeriados)}</td>
+        <td>${r.hDob}</td>
+        <td>${fmt.money(r.pxDob)}</td>
+        <td>${fmt.money(r.totDob)}</td>
+        <td><b>${fmt.money(r.bruto)}</b></td>
+        <td><button class="btn" data-edit="${r.det_id}">Editar diario</button></td>
+      `;
+      table.querySelector('tbody').appendChild(tr);
+    });
+    wrap.appendChild(table); cont.appendChild(wrap);
+
+    // Resumen semanal (totales de toda la planilla)
+    const R = rows.reduce((acc, r) => {
+      acc.subtotal += r.subtotal;
+      acc.totExt  += r.totExt;
+      acc.totFeri += r.totFeriados;
+      acc.totDob  += r.totDob;
+      acc.bruto   += r.bruto;
+      return acc;
+    }, {subtotal:0, totExt:0, totFeri:0, totDob:0, bruto:0});
+    const res = $('#resumenSemanal', detailWrap);
+    res.innerHTML = `
+      <div class="kpi-grid">
+        <div class="card kpi"><h3>Subtotal base</h3><div class="big">${fmt.money(R.subtotal)}</div></div>
+        <div class="card kpi"><h3>Extras</h3><div class="big">${fmt.money(R.totExt)}</div></div>
+        <div class="card kpi"><h3>Feriados</h3><div class="big">${fmt.money(R.totFeri)}</div></div>
+        <div class="card kpi"><h3>Dobles</h3><div class="big">${fmt.money(R.totDob)}</div></div>
+        <div class="card kpi"><h3>SALARIO BRUTO</h3><div class="big">${fmt.money(R.bruto)}</div></div>
+      </div>
+    `;
+
+    // Handlers
+    table.addEventListener('click', (e)=>{
+      const idbtn = e.target?.getAttribute?.('data-edit');
+      if (!idbtn) return;
+      const det = rows.find(x=> String(x.det_id)===String(idbtn))?.raw;
+      if (det) openHorasModal(id, data.semana_inicio, det);
+    });
+
+    // Recalcular cuando cambian factores
+    detailWrap.querySelectorAll('input[name="fx"], input[name="fd"], input[name="ff"]').forEach(inp=>{
+      inp.addEventListener('input', ()=> renderDetalles(id, data));
+    });
+  }
+
+  function openHorasModal(planillaId, semanaInicio, det){
+    const start = new Date(semanaInicio);
+    const diasBase = [...Array(7)].map((_,i)=>{
+      const d = new Date(start); d.setDate(d.getDate()+i);
+      const key = d.toISOString().slice(0,10);
+      const base = det.dias?.[key] || {horas_reg:0, horas_extra:0, horas_doble:0, feriado:false, horas_feriado:0};
+      return {fecha:key, ...base};
+    });
+
+    const form = document.createElement('form'); form.className='form-grid';
+    const grid = document.createElement('div'); grid.className='table-wrap';
+    const tbl = document.createElement('table'); tbl.className='table';
+    tbl.innerHTML = `
+      <thead><tr><th>Día</th><th>Normales</th><th>Extra</th><th>Dobles</th><th>Feriado</th><th>h Feriado</th></tr></thead>
+      <tbody></tbody>
+    `;
+    diasBase.forEach(d=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML=`
+        <td>${d.fecha}</td>
+        <td><input name="reg-${d.fecha}" type="number" step="0.01" value="${d.horas_reg}"></td>
+        <td><input name="ext-${d.fecha}" type="number" step="0.01" value="${d.horas_extra}"></td>
+        <td><input name="dob-${d.fecha}" type="number" step="0.01" value="${d.horas_doble}"></td>
+        <td style="text-align:center"><input name="fer-${d.fecha}" type="checkbox" ${d.feriado?'checked':''}></td>
+        <td><input name="hfer-${d.fecha}" type="number" step="0.01" value="${d.horas_feriado}"></td>
+      `;
+      tbl.querySelector('tbody').appendChild(tr);
+    });
+    grid.appendChild(tbl);
+
+    form.append(grid);
+
+    Modal.open({
+      title: `Editar diario · ${det.empleado_nombre || det.persona || ''}`,
+      content: form,
+      onOk: async ()=>{
+        const payload = {
+          dias: diasBase.map(d => ({
+            fecha: d.fecha,
+            horas_reg: Number(form.querySelector(`input[name="reg-${d.fecha}"]`).value||0),
+            horas_extra: Number(form.querySelector(`input[name="ext-${d.fecha}"]`).value||0),
+            horas_doble: Number(form.querySelector(`input[name="dob-${d.fecha}"]`).value||0),
+            feriado: !!form.querySelector(`input[name="fer-${d.fecha}"]`).checked,
+            horas_feriado: Number(form.querySelector(`input[name="hfer-${d.fecha}"]`).value||0),
+          }))
+        };
+        try{
+          await fetchJSON(api(`/planillas/${planillaId}/detalles/${det.id}/dias`), {
+            method:'PUT', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify(payload)
+          });
+          Toast('Horas diarias guardadas','success');
+          // recargar detalle
+          const data = await fetchJSON(api(`/planillas/${planillaId}`));
+          renderDetalles(planillaId, data);
+        }catch(e){ Toast(e.message,'error'); return false; }
+      }
+    });
+  }
+});
+
 // Búsqueda global (defensiva)
 const searchBtn = $('#searchBtn');
 if (searchBtn) searchBtn.onclick = ()=> doSearch();
@@ -1237,7 +1548,7 @@ navigate(location.hash || '#/dashboard');
 // Re-render on catalogs update
 Store.subscribe(()=> {
   const h=location.hash;
-  if (['#/ventas','#/compras','#/productos','#/contactos','#/recetas','#/produccion'].includes(h)) navigate(h);
+  if (['#/ventas','#/compras','#/productos','#/contactos','#/recetas','#/produccion','#/planillas'].includes(h)) navigate(h);
 });
 
 // Quick create -> ir a ventas

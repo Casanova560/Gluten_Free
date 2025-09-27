@@ -1,42 +1,60 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
 from sqlalchemy import text
 from ..utils.deps import db_dep
-from ..services.inventory import insert_inv_mov
-from datetime import datetime
 
-router = APIRouter()
+router = APIRouter(prefix="/inventario", tags=["inventario"])
 
 @router.get("/mp")
-def existencias_mp(db: Session = Depends(db_dep)):
-    rows = db.execute(text("SELECT * FROM v_existencias_mp ORDER BY nombre"))
-    return [dict(r) for r in rows.mappings()]
+def mp(db = Depends(db_dep)):
+    return db.execute(text("""
+        SELECT p.sku, p.nombre, SUM(m.cantidad) AS existencias,
+               SUM(CASE WHEN m.tipo='COMPRA' THEN m.cantidad ELSE 0 END) AS total_comprado,
+               SUM(CASE WHEN m.tipo='PROD_CONSUMO' THEN -m.cantidad ELSE 0 END) AS total_consumido
+        FROM producto p
+        LEFT JOIN inv_mov m ON m.producto_id = p.id
+        WHERE p.tipo = 'MP'
+        GROUP BY p.id
+        ORDER BY p.nombre
+    """)).mappings().all()
 
 @router.get("/pt")
-def existencias_pt(db: Session = Depends(db_dep)):
-    rows = db.execute(text("SELECT * FROM v_existencias_pt ORDER BY nombre"))
-    return [dict(r) for r in rows.mappings()]
+def pt(db = Depends(db_dep)):
+    return db.execute(text("""
+        SELECT p.sku, p.nombre, SUM(m.cantidad) AS existencias,
+               SUM(CASE WHEN m.tipo='PROD_SALIDA' THEN m.cantidad ELSE 0 END) AS total_producido,
+               SUM(CASE WHEN m.tipo='VENTA' THEN -m.cantidad ELSE 0 END) AS total_vendido
+        FROM producto p
+        LEFT JOIN inv_mov m ON m.producto_id = p.id
+        WHERE p.tipo = 'PT'
+        GROUP BY p.id
+        ORDER BY p.nombre
+    """)).mappings().all()
 
 @router.get("/resumen")
-def inv_resumen(db: Session = Depends(db_dep)):
-    rows = db.execute(text("SELECT * FROM v_inventario_resumen"))
-    return [dict(r) for r in rows.mappings()]
+def resumen(db = Depends(db_dep)):
+    return db.execute(text("""
+        SELECT p.sku, p.nombre, p.tipo,
+               MAX(CASE WHEN m.cantidad>0 THEN m.fecha END) AS ultima_entrada,
+               MAX(CASE WHEN m.cantidad<0 THEN m.fecha END) AS ultima_salida,
+               SUM(m.cantidad) AS existencias_mov
+        FROM producto p
+        LEFT JOIN inv_mov m ON m.producto_id = p.id
+        GROUP BY p.id
+        ORDER BY p.nombre
+    """)).mappings().all()
 
 @router.post("/merma")
-def registrar_merma(payload: dict, db: Session = Depends(db_dep)):
+def merma(payload: dict, db = Depends(db_dep)):
+    data = {
+        "fecha": payload.get("fecha"),
+        "producto_id": payload.get("producto_id"),
+        "uom_id": payload.get("uom_id"),
+        "cantidad": payload.get("cantidad"),
+        "nota": payload.get("nota"),
+    }
     db.execute(text("""
-        INSERT INTO merma (fecha,producto_id,uom_id,cantidad,ubicacion_id,motivo,nota)
-        VALUES (:fecha,:producto_id,:uom_id,:cantidad,:ubicacion_id,:motivo,:nota)
-    """), payload)
-    insert_inv_mov(
-        db, fecha=datetime.now(), producto_id=payload["producto_id"], uom_id=payload["uom_id"],
-        tipo='OUT', cantidad=payload["cantidad"], motivo='MERMA', ref_tabla='merma'
-    )
-    db.commit(); return {"ok": True}
-
-@router.get("/kardex")
-def kardex(producto_id: int, db: Session = Depends(db_dep)):
-    rows = db.execute(text("""
-        SELECT * FROM inv_mov WHERE producto_id = :pid ORDER BY fecha DESC
-    """), {"pid": producto_id})
-    return [dict(r) for r in rows.mappings()]
+        INSERT INTO inv_mov (fecha, producto_id, uom_id, cantidad, tipo, ref, ref_id, nota)
+        VALUES (:fecha, :producto_id, :uom_id, -:cantidad, 'MERMA', 'merma', NULL, :nota)
+    """), data)
+    db.commit()
+    return {"ok": True}

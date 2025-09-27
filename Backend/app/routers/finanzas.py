@@ -1,62 +1,70 @@
-# app/routers/finanzas.py
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from sqlalchemy import select, text
-from typing import List
-from ..db import get_db
-from .. import models
-from ..schemas import (
-    CostoIndirectoCreate, CostoIndirectoOut,
-    ConfigCosteoIn, ConfigCosteoOut
-)
+from fastapi import APIRouter, Depends
+from sqlalchemy import text
+from ..utils.deps import db_dep
 
 router = APIRouter(prefix="/finanzas", tags=["finanzas"])
 
-# ===== Partidas de indirectos =====
-@router.get("/indirectos", response_model=List[CostoIndirectoOut])
-def list_indirectos(db: Session = Depends(get_db)):
-    return db.execute(select(models.CostoIndirecto)).scalars().all()
+@router.get("/cxc")
+def cxc(db = Depends(db_dep)):
+    return db.execute(text("""
+        SELECT v.id AS venta_id, v.fecha,
+               DATE_ADD(v.fecha, INTERVAL COALESCE(v.dias_credito,0) DAY) AS fecha_limite,
+               SUM(d.cantidad*d.precio_unitario_crc - COALESCE(d.descuento_crc,0)) AS total_crc,
+               0 AS cobrado_crc,
+               SUM(d.cantidad*d.precio_unitario_crc - COALESCE(d.descuento_crc,0)) AS saldo_crc,
+               DATEDIFF(CURDATE(), DATE_ADD(v.fecha, INTERVAL COALESCE(v.dias_credito,0) DAY)) AS dias_vencido
+        FROM venta v
+        LEFT JOIN venta_det d ON d.venta_id = v.id
+        GROUP BY v.id
+        ORDER BY v.fecha DESC
+    """)).mappings().all()
 
-@router.post("/indirectos", response_model=CostoIndirectoOut)
-def create_indirecto(payload: CostoIndirectoCreate, db: Session = Depends(get_db)):
-    row = models.CostoIndirecto(**payload.dict())
-    db.add(row)
+@router.get("/cxp")
+def cxp(db = Depends(db_dep)):
+    return db.execute(text("""
+        SELECT c.id AS compra_id, c.fecha,
+               DATE_ADD(c.fecha, INTERVAL COALESCE(c.dias_credito,0) DAY) AS fecha_limite,
+               SUM(d.cantidad*d.costo_unitario_crc - COALESCE(d.descuento_crc,0)) AS total_crc,
+               0 AS pagado_crc,
+               SUM(d.cantidad*d.costo_unitario_crc - COALESCE(d.descuento_crc,0)) AS saldo_crc,
+               DATEDIFF(CURDATE(), DATE_ADD(c.fecha, INTERVAL COALESCE(c.dias_credito,0) DAY)) AS dias_vencido
+        FROM compra c
+        LEFT JOIN compra_det d ON d.compra_id = c.id
+        GROUP BY c.id
+        ORDER BY c.fecha DESC
+    """)).mappings().all()
+
+@router.get("/config/indirectos")
+def get_cfg(db = Depends(db_dep)):
+    row = db.execute(text("SELECT method, pct FROM config_costeo LIMIT 1")).mappings().first()
+    return row or {"method":"PORCENTAJE_GLOBAL", "pct": 0.0}
+
+@router.put("/config/indirectos")
+def set_cfg(payload: dict, db = Depends(db_dep)):
+    method = payload.get("method") or "PORCENTAJE_GLOBAL"
+    pct = float(payload.get("pct") or 0)
+    db.execute(text("""
+        INSERT INTO config_costeo (id, method, pct)
+        VALUES (1, :method, :pct)
+        ON DUPLICATE KEY UPDATE method=VALUES(method), pct=VALUES(pct)
+    """), {"method": method, "pct": pct})
     db.commit()
-    db.refresh(row)
-    return row
+    return {"ok": True}
 
-# ===== Configuración de costeo =====
-@router.get("/config/indirectos", response_model=ConfigCosteoOut)
-def get_cfg(db: Session = Depends(get_db)):
-    row = db.get(models.ConfigCosteo, 1)
-    if not row:
-        # bootstrap
-        row = models.ConfigCosteo(id=1, metodo="PCT_DIRECTO", parametro_json={"porcentaje": None})
-        db.add(row)
-        db.commit()
-        db.refresh(row)
-    pct = None
-    if row.parametro_json and row.parametro_json.get("porcentaje") is not None:
-        pct = float(row.parametro_json["porcentaje"])
-    return ConfigCosteoOut(metodo=row.metodo, pct=pct)
+@router.get("/indirectos")
+def list_ind(db = Depends(db_dep)):
+    return db.execute(text("SELECT id, nombre, monto_mensual_crc, activo FROM costo_indirecto ORDER BY id DESC")).mappings().all()
 
-@router.put("/config/indirectos", response_model=ConfigCosteoOut)
-def set_cfg(payload: ConfigCosteoIn, db: Session = Depends(get_db)):
-    row = db.get(models.ConfigCosteo, 1)
-    if not row:
-        row = models.ConfigCosteo(id=1)
-        db.add(row)
-    row.metodo = payload.metodo
-    pjson = row.parametro_json or {}
-    if payload.metodo == "PCT_DIRECTO":
-        # payload.pct puede venir 18 -> 18% o 0.18; normaliza
-        pct = payload.pct
-        if pct is not None and pct > 1:
-            pct = pct / 100.0
-        pjson["porcentaje"] = pct
-    else:
-        pjson["porcentaje"] = None
-    row.parametro_json = pjson
+@router.post("/indirectos")
+def add_ind(payload: dict, db = Depends(db_dep)):
+    data = {
+        "nombre": payload.get("nombre"),
+        "monto_mensual_crc": payload.get("monto_mensual_crc"),
+        "activo": 1 if str(payload.get("activo","1")) in ("1","true","True") else 0,
+    }
+    db.execute(text("""
+        INSERT INTO costo_indirecto (nombre, monto_mensual_crc, activo)
+        VALUES (:nombre, :monto_mensual_crc, :activo)
+    """), data)
     db.commit()
-    db.refresh(row)
-    return ConfigCosteoOut(metodo=row.metodo, pct=row.parametro_json.get("porcentaje"))
+    return {"ok": True}

@@ -1275,3 +1275,31 @@ BEGIN
 END$$
 
 DELIMITER ;
+
+SET @sql := IF (
+  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'producto'
+     AND COLUMN_NAME = 'precio_venta_crc') = 0,
+  'ALTER TABLE producto ADD COLUMN precio_venta_crc DECIMAL(18,6) NULL AFTER uom_base_id;',
+  'SELECT 1;'
+); PREPARE s1 FROM @sql; EXECUTE s1; DEALLOCATE PREPARE s1;
+
+SET @sql := IF (
+  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'producto'
+     AND COLUMN_NAME = 'costo_estandar_crc') = 0,
+  'ALTER TABLE producto ADD COLUMN costo_estandar_crc DECIMAL(18,6) NULL AFTER precio_venta_crc;',
+  'SELECT 1;'
+); PREPARE s2 FROM @sql; EXECUTE s2; DEALLOCATE PREPARE s2;
+
+CREATE TABLE IF NOT EXISTS config_costeo (
+  id TINYINT PRIMARY KEY DEFAULT 1,
+  metodo ENUM('PORCENTAJE_GLOBAL') NOT NULL DEFAULT 'PORCENTAJE_GLOBAL',
+  parametro_json JSON NULL, -- { "pct": 0.18 }
+  updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP
+);
+
+INSERT IGNORE INTO config_costeo (id, metodo, parametro_json)
+VALUES (1, 'PORCENTAJE_GLOBAL', JSON_OBJECT('pct', 0.18));

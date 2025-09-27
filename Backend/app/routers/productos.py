@@ -1,65 +1,71 @@
-# app/routers/productos.py
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from sqlalchemy import select
-from typing import List
-from decimal import Decimal
-from ..db import get_db
-from .. import models
-from ..schemas import ProductoCreate, ProductoUpdate, ProductoOut
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import text
+from ..utils.deps import db_dep
 
 router = APIRouter(prefix="/productos", tags=["productos"])
 
-@router.get("", response_model=List[ProductoOut])
-def list_productos(db: Session = Depends(get_db)):
-    return db.execute(select(models.Producto)).scalars().all()
+@router.get("")
+def list_productos(
+    q: str | None = Query(None),
+    tipo: str | None = Query(None, regex="^(MP|PT)$"),
+    activo: int | None = Query(None),
+    db = Depends(db_dep),
+):
+    base = "SELECT id, sku, nombre, tipo, uom_base_id, activo, precio_venta_crc, costo_estandar_crc FROM producto WHERE 1=1"
+    params = {}
+    if tipo:
+        base += " AND tipo = :tipo"; params["tipo"] = tipo
+    if q:
+        base += " AND (sku LIKE :q OR nombre LIKE :q)"; params["q"] = f"%{q}%"
+    if activo is not None:
+        base += " AND activo = :activo"; params["activo"] = 1 if str(activo) in ("1","true","True") else 0
+    base += " ORDER BY id DESC LIMIT 500"
+    return db.execute(text(base), params).mappings().all()
 
-def _validate_mp(tipo: str, costo_estandar_crc):
-    if tipo == "MP":
-        if costo_estandar_crc is None:
-            raise HTTPException(status_code=400,
-                detail="Para Materia Prima (MP) es obligatorio 'costo_estandar_crc' (hasta que existan compras).")
-        try:
-            dec = Decimal(str(costo_estandar_crc))
-        except Exception:
-            raise HTTPException(status_code=400, detail="costo_estandar_crc inválido.")
-        if dec < 0:
-            raise HTTPException(status_code=400, detail="costo_estandar_crc no puede ser negativo.")
-
-@router.post("", response_model=ProductoOut)
-def create_producto(payload: ProductoCreate, db: Session = Depends(get_db)):
-    sku = payload.sku or f"AUTO-{abs(hash(payload.nombre))%100000:05d}"
-    _validate_mp(payload.tipo, payload.costo_estandar_crc)
-
-    prod = models.Producto(
-        sku=sku,
-        nombre=payload.nombre,
-        tipo=payload.tipo,
-        uom_base_id=payload.uom_base_id,
-        activo=bool(payload.activo) if payload.activo is not None else True,
-        precio_venta_crc=payload.precio_venta_crc,
-        costo_estandar_crc=payload.costo_estandar_crc
-    )
-    db.add(prod)
+@router.post("")
+def create_producto(payload: dict, db = Depends(db_dep)):
+    fields = ["sku", "nombre", "tipo", "uom_base_id", "activo", "precio_venta_crc", "costo_estandar_crc"]
+    data = {k: payload.get(k) for k in fields}
+    if not (data.get("nombre") or "").strip():
+        raise HTTPException(400, "nombre requerido")
+    if data.get("tipo") not in ("MP","PT"):
+        raise HTTPException(400, "tipo debe ser MP o PT")
+    if not data.get("uom_base_id"):
+        raise HTTPException(400, "uom_base_id requerido")
+    data["activo"] = 1 if str(data.get("activo","1")) in ("1","true","True") else 0
+    res = db.execute(text("""
+        INSERT INTO producto (sku, nombre, tipo, uom_base_id, activo, precio_venta_crc, costo_estandar_crc)
+        VALUES (:sku, :nombre, :tipo, :uom_base_id, :activo, :precio_venta_crc, :costo_estandar_crc)
+    """), data)
     db.commit()
-    db.refresh(prod)
-    return prod
+    pid = res.lastrowid
+    return db.execute(text("SELECT * FROM producto WHERE id=:id"), {"id": pid}).mappings().first()
 
-@router.put("/{producto_id}", response_model=ProductoOut)
-def update_producto(producto_id: int, payload: ProductoUpdate, db: Session = Depends(get_db)):
-    prod = db.get(models.Producto, producto_id)
-    if not prod:
-        raise HTTPException(status_code=404, detail="Producto no encontrado")
-
-    data = payload.dict(exclude_unset=True)
-    tipo_dest = data.get("tipo", prod.tipo)
-    costo_dest = data.get("costo_estandar_crc", prod.costo_estandar_crc)
-    _validate_mp(tipo_dest, costo_dest)
-
-    for f, v in data.items():
-        setattr(prod, f, v)
-
-    db.add(prod)
+@router.put("/{producto_id}")
+def update_producto(producto_id: int, payload: dict, db = Depends(db_dep)):
+    data = {
+        "id": producto_id,
+        "sku": payload.get("sku"),
+        "nombre": payload.get("nombre"),
+        "tipo": payload.get("tipo"),
+        "uom_base_id": payload.get("uom_base_id"),
+        "activo": (1 if str(payload.get("activo")) in ("1","true","True") else 0) if payload.get("activo") is not None else None,
+        "precio_venta_crc": payload.get("precio_venta_crc"),
+        "costo_estandar_crc": payload.get("costo_estandar_crc"),
+    }
+    db.execute(text("""
+        UPDATE producto SET
+          sku = COALESCE(:sku, sku),
+          nombre = COALESCE(:nombre, nombre),
+          tipo = COALESCE(:tipo, tipo),
+          uom_base_id = COALESCE(:uom_base_id, uom_base_id),
+          activo = COALESCE(:activo, activo),
+          precio_venta_crc = COALESCE(:precio_venta_crc, precio_venta_crc),
+          costo_estandar_crc = COALESCE(:costo_estandar_crc, costo_estandar_crc)
+        WHERE id = :id
+    """), data)
     db.commit()
-    db.refresh(prod)
-    return prod
+    row = db.execute(text("SELECT * FROM producto WHERE id=:id"), {"id": producto_id}).mappings().first()
+    if not row:
+        raise HTTPException(404, "producto no encontrado")
+    return row
