@@ -73,12 +73,11 @@ const fmt = {
 };
 const slug = (s) => (s||'').toString().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-zA-Z0-9]+/g,'-').replace(/(^-|-$)/g,'').toLowerCase();
 
-// === Nuevo: helper de costos MP (por unidad base) ===
+// === Helper de costos MP (por unidad base) ===
 async function getCostosMP(ids=[]) {
   if (!ids.length) return {};
   try {
     const res = await fetchJSON(api(`/costos/mp?ids=${ids.join(',')}`));
-    // Acepta {id: number} o {id: {costo_unitario_crc: number}}
     const out = {};
     Object.entries(res||{}).forEach(([k,v])=>{
       out[k] = typeof v === 'number' ? v : Number(v?.costo_unitario_crc||0);
@@ -87,6 +86,24 @@ async function getCostosMP(ids=[]) {
   } catch {
     return {};
   }
+}
+
+// === Helper costo unitario de PT (por receta o costo estándar) ===
+async function getCostoUnitarioPT(productoId) {
+  try {
+    // 1) Buscar receta cuyo producto de salida sea este PT
+    const recetas = await fetchJSON(api('/recetas')).catch(()=>[]);
+    const rec = (recetas||[]).find(r => Number(r.producto_salida_id)===Number(productoId));
+    if (rec) {
+      const res = await fetchJSON(api(`/costeo/recetas/${rec.id}`)).catch(()=>null);
+      const unit = Number(res?.unitario_crc||0);
+      if (unit>0) return unit;
+    }
+    // 2) Fallback: usar costo_estandar_crc del producto
+    const prod = Store.state.productos.find(p=> Number(p.id)===Number(productoId));
+    if (prod && Number(prod.costo_estandar_crc||0)>0) return Number(prod.costo_estandar_crc);
+  } catch {}
+  return 0;
 }
 
 // --- Reactive Store ---
@@ -239,6 +256,8 @@ route('#/productos', (root) => {
         {key:'nombre',label:'Nombre'},
         {key:'tipo',label:'Tipo'},
         {key:'uom_base_id',label:'UOM'},
+        {key:'precio_venta_crc',label:'Precio venta',format:fmt.money},
+        {key:'costo_estandar_crc',label:'Costo estándar',format:fmt.money},
         {key:'activo',label:'Activo'}
       ],
       rows
@@ -250,10 +269,26 @@ route('#/productos', (root) => {
     const form = document.createElement('form'); form.className='form-grid';
     const sku = Field('Código interno (SKU)', Input({name:'sku', placeholder:'Opcional'}), {hint:'Si se deja vacío, se autogenera'});
     const nom = Field('Nombre', Input({name:'nombre', required:true}));
-    const tipo = Field('Tipo', (()=>{ const s=Select({name:'tipo',items:[{id:'MP',nombre:'Materia Prima'},{id:'PT',nombre:'Producto Terminado'}], valueKey:'id'}); s.required=true; s.value=prefill.tipo; return s; })());
+    const tipoSel = Select({name:'tipo',items:[{id:'MP',nombre:'Materia Prima'},{id:'PT',nombre:'Producto Terminado'}], valueKey:'id'});
+    tipoSel.required = true; tipoSel.value = prefill.tipo;
+    const tipo = Field('Tipo', tipoSel);
     const uom = Field('UOM base', Select({name:'uom_base_id', items:Store.state.uoms, valueKey:'id', labelKey:'nombre', required:true}));
     const activo = Field('Activo', (()=>{ const s=Select({name:'activo', items:[{id:1,nombre:'Sí'},{id:0,nombre:'No'}], valueKey:'id'}); s.value=1; return s;})());
-    form.append(sku,nom,tipo,uom,activo);
+
+    // NUEVO: campos PT
+    const precioPT = Field('Precio de venta (PT)', Input({name:'precio_venta_crc', type:'number', step:'0.01', value:''}), {hint:'Se usa como precio por defecto en ventas'});
+    const costoStdPT = Field('Costo estándar (PT)', Input({name:'costo_estandar_crc', type:'number', step:'0.01', value:''}), {hint:'Puede actualizarse desde costeo/producción'});
+    precioPT.dataset.pt = '1'; costoStdPT.dataset.pt = '1';
+
+    // Por defecto solo mostrar si PT
+    function togglePT() {
+      const isPT = tipoSel.value === 'PT';
+      [precioPT, costoStdPT].forEach(el => el.style.display = isPT ? '' : 'none');
+    }
+    tipoSel.addEventListener('change', togglePT);
+    togglePT();
+
+    form.append(sku,nom,tipo,uom,precioPT,costoStdPT,activo);
 
     Modal.open({
       title:'Nuevo producto',
@@ -262,6 +297,8 @@ route('#/productos', (root) => {
         const payload = Object.fromEntries(new FormData(form).entries());
         if (!payload.sku) payload.sku = `${slug(payload.nombre).slice(0,12)}-${Math.random().toString(36).slice(2,6)}`.toUpperCase();
         payload.uom_base_id = Number(payload.uom_base_id);
+        if (payload.precio_venta_crc) payload.precio_venta_crc = Number(payload.precio_venta_crc);
+        if (payload.costo_estandar_crc) payload.costo_estandar_crc = Number(payload.costo_estandar_crc);
         try {
           await fetchJSON(api('/productos'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
           const productos = await fetchJSON(api('/productos')); Store.set({productos});
@@ -357,6 +394,7 @@ route('#/ventas', (root) => {
   itemsPanel.append(lines, addLineBtn, totals);
   root.appendChild(itemsPanel);
 
+  // === Línea de venta con costo estimado + margen y precio sugerido ===
   function lineComponent(){
     const row=document.createElement('div'); row.className='line';
     const prodWrap = Field('Producto', Select({name:'producto_id', items:Store.state.productos.filter(p=>p.tipo==='PT'), required:true}));
@@ -367,12 +405,60 @@ route('#/ventas', (root) => {
     const uom  = Field('UOM', Select({name:'uom_id', items:Store.state.uoms, required:true}));
     const cant = Field('Cantidad', Input({name:'cantidad', type:'number', step:'0.000001', required:true, value:'1'}));
     const precio= Field('Precio', Input({name:'precio_unitario_crc', type:'number', step:'0.01', required:true, value:'0'}));
+
+    const costoEst= Field('Costo est.', Input({name:'costo_estimado_crc', type:'number', step:'0.01', value:'0'}));
+    const margen = Field('Margen %', Input({name:'margen_pct', type:'number', step:'0.01', value:'40'}));
+
     const desc = Field('Desc', Input({name:'descuento_crc', type:'number', step:'0.01', value:'0'}));
     const del = document.createElement('button'); del.type='button'; del.className='icon-btn'; del.textContent='🗑'; del.onclick=()=>{ row.remove(); calc(); };
-    row.append(prodWrap, uom, cant, precio, desc, del);
+
+    row.append(prodWrap, uom, cant, precio, costoEst, margen, desc, del);
+
+    function recalcPrecioSugerido(){
+      const c = Number(row.querySelector('input[name="costo_estimado_crc"]').value||0);
+      const m = Number(row.querySelector('input[name="margen_pct"]').value||0);
+      if (c>0) {
+        const m01 = m>1 ? m/100 : m;
+        const sug = c * (1+m01);
+        const precioEl = row.querySelector('input[name="precio_unitario_crc"]');
+        if (!Number(precioEl.value)) precioEl.value = String(sug.toFixed(2));
+      }
+    }
+
+    // Cuando eligen producto, fija UOM base y estima costo desde receta si existe
+    row.addEventListener('change', async (e)=>{
+      if (e.target.name === 'producto_id') {
+        const pid = Number(e.target.value||0);
+        const prod = Store.state.productos.find(p=>p.id===pid);
+        if (prod) {
+          const uomSel = uom.querySelector('select');
+          uomSel.value = String(prod.uom_base_id);
+          uomSel.disabled = true;
+          if (Number(prod.precio_venta_crc||0) > 0) {
+            row.querySelector('input[name="precio_unitario_crc"]').value = String(Number(prod.precio_venta_crc).toFixed(2));
+          }
+        } else {
+          uom.querySelector('select').disabled = false;
+        }
+        // Buscar receta del PT y costear
+        try{
+          const recetas = await fetchJSON(api('/recetas')).catch(()=>[]);
+          const rec = recetas.find(r => Number(r.producto_salida_id)===pid);
+          if (rec) {
+            const res = await fetchJSON(api(`/costeo/recetas/${rec.id}`)).catch(()=>null);
+            const unit = Number(res?.unitario_crc||0);
+            row.querySelector('input[name="costo_estimado_crc"]').value = unit ? String(unit.toFixed(2)) : '0';
+            recalcPrecioSugerido();
+          }
+        }catch(_){}
+      }
+      if (e.target.name==='margen_pct' || e.target.name==='costo_estimado_crc') recalcPrecioSugerido();
+    });
+
     row.addEventListener('input', calc);
     return row;
   }
+
   function calc(){
     let total=0; $$('.line', lines).forEach(row=>{
       const g = Object.fromEntries($$('select,input',row).map(el=>[el.name, el.value]));
@@ -413,7 +499,10 @@ route('#/ventas', (root) => {
       Field('Código interno (SKU)', Input({name:'sku', placeholder:'Opcional'})),
       Field('Nombre', Input({name:'nombre', required:true})),
       Field('Tipo', (()=>{ const s=Select({name:'tipo', items:[{id:'MP',nombre:'Materia Prima'},{id:'PT',nombre:'Producto Terminado'}], valueKey:'id', required:true}); s.value=tipo; return s;})()),
-      Field('UOM base', Select({name:'uom_base_id', items:Store.state.uoms, valueKey:'id', labelKey:'nombre', required:true}))
+      Field('UOM base', Select({name:'uom_base_id', items:Store.state.uoms, valueKey:'id', labelKey:'nombre', required:true})),
+      // NUEVO: precio/costo si PT
+      Field('Precio de venta (PT)', Input({name:'precio_venta_crc', type:'number', step:'0.01'})),
+      Field('Costo estándar (PT)', Input({name:'costo_estandar_crc', type:'number', step:'0.01'}))
     );
     Modal.open({
       title:'Nuevo producto',
@@ -422,6 +511,8 @@ route('#/ventas', (root) => {
         const payload = Object.fromEntries(new FormData(form).entries());
         if (!payload.sku) payload.sku = `${slug(payload.nombre).slice(0,12)}-${Math.random().toString(36).slice(2,6)}`.toUpperCase();
         payload.uom_base_id = Number(payload.uom_base_id);
+        if (payload.precio_venta_crc) payload.precio_venta_crc = Number(payload.precio_venta_crc);
+        if (payload.costo_estandar_crc) payload.costo_estandar_crc = Number(payload.costo_estandar_crc);
         try{
           await fetchJSON(api('/productos'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
           const productos = await fetchJSON(api('/productos')); Store.set({productos});
@@ -484,7 +575,6 @@ route('#/compras', (root) => {
         const prod = Store.state.productos.find(p=>p.id===pid);
         if (prod) { uomSel.value = String(prod.uom_base_id); uomSel.disabled = true; }
         else { uomSel.disabled = false; }
-        // Traer costo sugerido para este MP
         if (pid) {
           const map = await getCostosMP([pid]);
           const c = Number(map[pid] || 0);
@@ -540,7 +630,10 @@ route('#/compras', (root) => {
       Field('Código interno (SKU)', Input({name:'sku', placeholder:'Opcional'})),
       Field('Nombre', Input({name:'nombre', required:true})),
       Field('Tipo', (()=>{ const s=Select({name:'tipo', items:[{id:'MP',nombre:'Materia Prima'},{id:'PT',nombre:'Producto Terminado'}], valueKey:'id', required:true}); s.value=tipo; return s;})()),
-      Field('UOM base', Select({name:'uom_base_id', items:Store.state.uoms, valueKey:'id', labelKey:'nombre', required:true}))
+      Field('UOM base', Select({name:'uom_base_id', items:Store.state.uoms, valueKey:'id', labelKey:'nombre', required:true})),
+      // NUEVO: precio/costo si PT
+      Field('Precio de venta (PT)', Input({name:'precio_venta_crc', type:'number', step:'0.01'})),
+      Field('Costo estándar (PT)', Input({name:'costo_estandar_crc', type:'number', step:'0.01'}))
     );
     Modal.open({
       title:'Nuevo producto',
@@ -549,6 +642,8 @@ route('#/compras', (root) => {
         const payload = Object.fromEntries(new FormData(form).entries());
         if (!payload.sku) payload.sku = `${slug(payload.nombre).slice(0,12)}-${Math.random().toString(36).slice(2,6)}`.toUpperCase();
         payload.uom_base_id = Number(payload.uom_base_id);
+        if (payload.precio_venta_crc) payload.precio_venta_crc = Number(payload.precio_venta_crc);
+        if (payload.costo_estandar_crc) payload.costo_estandar_crc = Number(payload.costo_estandar_crc);
         try{
           await fetchJSON(api('/productos'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
           const productos = await fetchJSON(api('/productos')); Store.set({productos});
@@ -586,7 +681,7 @@ route('#/recetas', (root)=>{
   }
   renderList();
 
-  // === Costeo de receta (usa costos base desde compras) ===
+  // === Costeo de receta (usa costos base desde compras) + Márgen/IVA ===
   const costPanel = document.createElement('div'); costPanel.className='panel';
   costPanel.innerHTML = `
     <h3>Costeo de receta</h3>
@@ -600,6 +695,8 @@ route('#/recetas', (root)=>{
         </select>
       </label>
       <label class="field"><span>% personalizado</span><input name="pct" type="number" step="0.01" placeholder="18 = 18%" disabled></label>
+      <label class="field"><span>% Margen sugerido</span><input name="margen" type="number" step="0.01" placeholder="40 = 40%"></label>
+      <label class="field"><span>% Impuesto (opcional)</span><input name="iva" type="number" step="0.01" placeholder="13 = 13%"></label>
       <div class="form-actions">
         <button id="btnCostearReceta" class="btn-primary">Calcular</button>
       </div>
@@ -644,6 +741,8 @@ route('#/recetas', (root)=>{
     const rendInput = costPanel.querySelector('input[name="rend"]').value;
     const custom = costPanel.querySelector('select[name="modo_ind"]').value === 'custom';
     const pctInput = costPanel.querySelector('input[name="pct"]').value;
+    const margenInput = costPanel.querySelector('input[name="margen"]').value;
+    const ivaInput = costPanel.querySelector('input[name="iva"]').value;
 
     try{
       // Traemos detalle de receta (ingredientes con cantidades)
@@ -658,7 +757,8 @@ route('#/recetas', (root)=>{
       const rows = ingredientes.map(it => {
         const unit = (typeof costos[it.producto_id] === 'number') ? Number(costos[it.producto_id]||0) : Number(it.costo_unitario_crc||0);
         const qty  = Number(it.cantidad || 0);
-        const total = unit * qty;
+        const otros = Number(it.otros_costos_crc||0);
+        const total = unit * qty + otros;
         return {
           ...it,
           nombre: it.nombre || (Store.state.productos.find(p=>p.id===Number(it.producto_id))?.nombre || `#${it.producto_id}`),
@@ -682,14 +782,20 @@ route('#/recetas', (root)=>{
       }
       const unitario = (rendimiento && rendimiento > 0) ? (total / rendimiento) : null;
 
+      // Precio sugerido
+      const mg = normPct(margenInput) || 0;
+      const iva = normPct(ivaInput) || 0;
+      const precioSugerido = unitario != null ? (unitario * (1+mg) * (1+iva)) : null;
+
       // KPIs
       const kpi = costPanel.querySelector('#recetaCostKPI'); kpi.innerHTML='';
-      const mk = (t,v)=>{ const c=document.createElement('div'); c.className='card kpi'; c.innerHTML=`<h3>${t}</h3><div class="big">${fmt.money(v)}</div>`; return c; };
+      const mk = (t,v)=>{ const c=document.createElement('div'); c.className='card kpi'; c.innerHTML=`<h3>${t}</h3><div class="big">${v==null?'—':fmt.money(v)}</div>`; return c; };
       kpi.append(
         mk('Directo', directo),
         mk('Indirecto', indirecto),
         mk('Total receta', total),
-        mk('Unitario estimado', unitario ?? 0)
+        mk('Unitario estimado', unitario ?? null),
+        mk('Precio sugerido', precioSugerido ?? null)
       );
 
       // Tabla
@@ -713,14 +819,29 @@ route('#/recetas', (root)=>{
     const addPT = document.createElement('button'); addPT.type='button'; addPT.className='icon-btn'; addPT.textContent='＋'; addPT.title='Nuevo PT'; addPT.onclick=()=>quickProduct('PT', prodOut.querySelector('select'));
     prodOut.appendChild(addPT);
     const uomOut = Field('UOM salida', Select({name:'uom_salida_id', items:Store.state.uoms}));
+    const manoObra = Field('Mano de obra (CRC)', Input({name:'mano_obra_crc', type:'number', step:'0.01', value:'0'}));
+    const mermaEst = Field('Merma estimada (CRC)', Input({name:'merma_crc', type:'number', step:'0.01', value:'0'}));
+    const pctInd = Field('% Indirectos', Input({name:'indirectos_pct', type:'number', step:'0.01', value:''}), {hint:'Si vacío, se aplicará el % global'});
     const nota   = Field('Notas', Input({name:'nota'}));
-    form.append(nombre, prodOut, uomOut, nota);
+    form.append(nombre, prodOut, uomOut, manoObra, mermaEst, pctInd, nota);
 
     const ingredientes = document.createElement('div'); ingredientes.className='subpanel';
-    ingredientes.innerHTML = '<h4>Ingredientes (MP)</h4>';
+    ingredientes.innerHTML = '<h4>Ingredientes (MP) con costos</h4>';
     const ingLines = document.createElement('div'); ingLines.className='lines';
     const addIng = document.createElement('button'); addIng.type='button'; addIng.textContent='+ Agregar';
     ingredientes.append(ingLines, addIng);
+
+    const totBox = document.createElement('div'); totBox.className='kpi-grid';
+    totBox.innerHTML = `
+      <div class="card kpi"><h3>Materiales</h3><div class="big" id="k_mat">₡0,00</div></div>
+      <div class="card kpi"><h3>Otros</h3><div class="big" id="k_otr">₡0,00</div></div>
+      <div class="card kpi"><h3>Total ingredientes</h3><div class="big" id="k_totIng">₡0,00</div></div>
+      <div class="card kpi"><h3>Indirectos</h3><div class="big" id="k_ind">₡0,00</div></div>
+      <div class="card kpi"><h3>Mano de obra</h3><div class="big" id="k_mo">₡0,00</div></div>
+      <div class="card kpi"><h3>Merma</h3><div class="big" id="k_mer">₡0,00</div></div>
+      <div class="card kpi"><h3>Total receta</h3><div class="big" id="k_totRec">₡0,00</div></div>
+    `;
+    ingredientes.appendChild(totBox);
 
     const salidas = document.createElement('div'); salidas.className='subpanel';
     salidas.innerHTML = '<h4>Salidas (PT)</h4>';
@@ -737,17 +858,39 @@ route('#/recetas', (root)=>{
       const uomSel = Select({name:'uom_id', items:Store.state.uoms, required:true});
       const uomFld = Field('UOM', uomSel);
       const qty = Field('Cantidad', Input({name:'cantidad', type:'number', step:'0.000001', required:true, value:'1'}));
-      row.append(mpFld, uomFld, qty);
+      const costoU = Field('Costo u.', Input({name:'costo_unitario_crc', type:'number', step:'0.0001', value:'0'}));
+      const otros  = Field('Otros costos', Input({name:'otros_costos_crc', type:'number', step:'0.01', value:'0'}));
+      const subTot = Field('Subtotal', Input({name:'subtotal', type:'number', step:'0.01', value:'0'}));
+      subTot.querySelector('input').readOnly = true;
 
-      // bloquear UOM a la UOM base del producto
-      row.addEventListener('change', (e)=>{
+      row.append(mpFld, uomFld, qty, costoU, otros, subTot);
+
+      // bloquear UOM a la UOM base del producto + proponer costo
+      row.addEventListener('change', async (e)=>{
         if (e.target.name === 'producto_id') {
           const pid = Number(e.target.value||0);
           const prod = Store.state.productos.find(p=>p.id===pid);
           if (prod) { uomSel.value = String(prod.uom_base_id); uomSel.disabled = true; }
           else { uomSel.disabled = false; }
+          if (pid) {
+            const map = await getCostosMP([pid]);
+            const c = Number(map[pid] || 0);
+            if (c>0 && !Number(costoU.querySelector('input').value)) {
+              costoU.querySelector('input').value = String(c);
+            }
+          }
         }
+        recalcRow(); recalcTotals();
       });
+      row.addEventListener('input', ()=>{ recalcRow(); recalcTotals(); });
+
+      function recalcRow(){
+        const q = Number(qty.querySelector('input').value||0);
+        const cu = Number(costoU.querySelector('input').value||0);
+        const ot = Number(otros.querySelector('input').value||0);
+        const subtotal = (q*cu) + ot;
+        subTot.querySelector('input').value = subtotal.toFixed(2);
+      }
 
       return row;
     };
@@ -772,18 +915,58 @@ route('#/recetas', (root)=>{
       return row;
     };
 
-    addIng.onclick=()=> ingLines.appendChild(ingRow());
+    function recalcTotals(){
+      const lines = $$('.line', ingLines);
+      let mat=0, otros=0;
+      lines.forEach(l=>{
+        const q = Number(l.querySelector('input[name="cantidad"]').value||0);
+        const cu = Number(l.querySelector('input[name="costo_unitario_crc"]').value||0);
+        const ot = Number(l.querySelector('input[name="otros_costos_crc"]').value||0);
+        mat += q*cu; otros += ot;
+      });
+      const totIng = mat + otros;
+      const mo = Number(form.querySelector('input[name="mano_obra_crc"]').value||0);
+      const mer = Number(form.querySelector('input[name="merma_crc"]').value||0);
+      const pct = form.querySelector('input[name="indirectos_pct"]').value;
+      const pctN = pct === '' ? null : Number(pct);
+      const ind = (pctN==null ? (totIng * (globalPct||0)) : (totIng * ((pctN>1?pctN/100:pctN)||0)));
+      const totRec = totIng + ind + mo + mer;
+
+      $('#k_mat', totBox).textContent = fmt.money(mat);
+      $('#k_otr', totBox).textContent = fmt.money(otros);
+      $('#k_totIng', totBox).textContent = fmt.money(totIng);
+      $('#k_ind', totBox).textContent = fmt.money(ind);
+      $('#k_mo', totBox).textContent = fmt.money(mo);
+      $('#k_mer', totBox).textContent = fmt.money(mer);
+      $('#k_totRec', totBox).textContent = fmt.money(totRec);
+    }
+
+    addIng.onclick=()=> { ingLines.appendChild(ingRow()); recalcTotals(); };
     addOut.onclick=()=> outLines.appendChild(outRow());
+
+    // Arranca con una fila por defecto
+    addIng.click();
+
+    // Recalcular totales al cambiar factores
+    form.addEventListener('input', (e)=>{
+      if (['mano_obra_crc','merma_crc','indirectos_pct'].includes(e.target.name)) recalcTotals();
+    });
 
     Modal.open({
       title:'Nueva receta',
       content: wrap,
       onOk: async ()=>{
         const payload = Object.fromEntries(new FormData(form).entries());
+        // Normalizar numéricos opcionales
+        ['mano_obra_crc','merma_crc','indirectos_pct'].forEach(k=>{
+          if (payload[k]!=='' && payload[k]!=null) payload[k]=Number(payload[k]);
+        });
         try{
           const rec = await fetchJSON(api('/recetas'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
           for (const row of $$('.line', ingLines)) {
             const data = Object.fromEntries($$('select,input', row).map(el=>[el.name, el.value]));
+            data.costo_unitario_crc = Number(data.costo_unitario_crc||0);
+            data.otros_costos_crc = Number(data.otros_costos_crc||0);
             await fetchJSON(api(`/recetas/${rec.id}/ingredientes`), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data)});
           }
           for (const row of $$('.line', outLines)) {
@@ -801,7 +984,9 @@ route('#/recetas', (root)=>{
         Field('Código interno (SKU)', Input({name:'sku', placeholder:'Opcional'})),
         Field('Nombre', Input({name:'nombre', required:true})),
         Field('Tipo', (()=>{ const s=Select({name:'tipo', items:[{id:'MP',nombre:'Materia Prima'},{id:'PT',nombre:'Producto Terminado'}], valueKey:'id', required:true}); s.value=tipo; return s;})()),
-        Field('UOM base', Select({name:'uom_base_id', items:Store.state.uoms, valueKey:'id', labelKey:'nombre', required:true}))
+        Field('UOM base', Select({name:'uom_base_id', items:Store.state.uoms, valueKey:'id', labelKey:'nombre', required:true})),
+        Field('Precio de venta (PT)', Input({name:'precio_venta_crc', type:'number', step:'0.01'})),
+        Field('Costo estándar (PT)', Input({name:'costo_estandar_crc', type:'number', step:'0.01'}))
       );
       Modal.open({
         title:'Nuevo producto',
@@ -810,11 +995,12 @@ route('#/recetas', (root)=>{
           const payload = Object.fromEntries(new FormData(f).entries());
           if (!payload.sku) payload.sku = `${slug(payload.nombre).slice(0,12)}-${Math.random().toString(36).slice(2,6)}`.toUpperCase();
           payload.uom_base_id = Number(payload.uom_base_id);
+          if (payload.precio_venta_crc) payload.precio_venta_crc = Number(payload.precio_venta_crc);
+          if (payload.costo_estandar_crc) payload.costo_estandar_crc = Number(payload.costo_estandar_crc);
           try{
             await fetchJSON(api('/productos'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
             const productos = await fetchJSON(api('/productos')); Store.set({productos});
             if (selectEl) {
-              // refrescar opciones respetando tipo
               selectEl.innerHTML='';
               const ph = document.createElement('option'); ph.value=''; ph.textContent='Seleccione…'; selectEl.appendChild(ph);
               const filter = tipo==='MP' ? (p)=>p.tipo==='MP' : (p)=>p.tipo==='PT';
@@ -885,6 +1071,8 @@ route('#/produccion', (root)=>{
         mk('Unitario real', data.unitario_crc ?? 0)
       );
       const rows = data.consumos || [];
+[];  // <-- completa la línea anterior: const rows = data.consumos || [];
+
       const tbl = Table({columns:[
         {key:'nombre',label:'MP'},
         {key:'cantidad',label:'Cant.'},
@@ -995,11 +1183,13 @@ route('#/produccion', (root)=>{
   }, 400));
 });
 
+/* ================= INVENTARIO ================= */
 route('#/inventario', async (root)=>{
   const bar=Toolbar(
     (()=>{ const b=document.createElement('button'); b.textContent='MP'; b.onclick=()=>load('mp'); return b;})(),
     (()=>{ const b=document.createElement('button'); b.textContent='PT'; b.onclick=()=>load('pt'); return b;})(),
     (()=>{ const b=document.createElement('button'); b.textContent='Resumen'; b.onclick=()=>load('resumen'); return b;})(),
+    (()=>{ const b=document.createElement('button'); b.textContent='Mermas'; b.onclick=()=>load('mermas'); return b;})(),
     (()=>{ const b=document.createElement('button'); b.className='btn-primary'; b.textContent='Registrar merma'; b.onclick=()=>openMerma(); return b;})(),
   );
   root.appendChild(bar);
@@ -1007,6 +1197,21 @@ route('#/inventario', async (root)=>{
 
   async function load(kind){
     cont.innerHTML='Cargando…';
+    if (kind==='mermas') {
+      const data = await fetchJSON(api(`/inventario/mermas`)).catch(()=>[]);
+      const cols = [
+        {key:'fecha',label:'Fecha',format:fmt.date},
+        {key:'producto_nombre',label:'Producto'},
+        {key:'uom_nombre',label:'UOM'},
+        {key:'cantidad',label:'Cantidad'},
+        {key:'costo_unitario_crc',label:'Costo u.',format:fmt.money},
+        {key:'costo_total_crc',label:'Costo total',format:fmt.money},
+        {key:'motivo',label:'Motivo'},
+        {key:'nota',label:'Nota'}
+      ];
+      cont.innerHTML=''; cont.appendChild(Table({columns:cols, rows:data}));
+      return;
+    }
     const data=await fetchJSON(api(`/inventario/${kind}`)).catch(()=>[]);
     const cols = kind==='resumen' ? [
       {key:'sku',label:'Código'},{key:'nombre',label:'Nombre'},{key:'tipo',label:'Tipo'},
@@ -1032,13 +1237,32 @@ route('#/inventario', async (root)=>{
       Field('Cantidad', Input({name:'cantidad', type:'number', step:'0.000001', required:true, value:'1'})),
       Field('Ubicación (opcional)', Select({name:'ubicacion_id', items:[], placeholder:'—'})),
       Field('Motivo', Input({name:'motivo'})),
-      Field('Nota', Input({name:'nota'}))
+      Field('Nota', Input({name:'nota'})),
+      Field('Costo u. (auto)', Input({name:'costo_unitario_crc', type:'number', step:'0.0001', value:'0'}))
     );
+    // Autocompletar costo u. según MP/PT
+    const selProd = form.querySelector('select[name="producto_id"]');
+    selProd.onchange = async ()=>{
+      const pid = Number(selProd.value||0);
+      if (!pid) return;
+      const prod = Store.state.productos.find(p=>Number(p.id)===pid);
+      let cu = 0;
+      if (prod?.tipo === 'MP') {
+        const map = await getCostosMP([pid]);
+        cu = Number(map[pid]||0);
+      } else if (prod?.tipo === 'PT') {
+        cu = await getCostoUnitarioPT(pid);
+      }
+      form.querySelector('input[name="costo_unitario_crc"]').value = cu ? String(cu.toFixed(4)) : '0';
+    };
+
     Modal.open({
       title:'Registrar merma',
       content:form,
       onOk: async ()=>{
         const payload=Object.fromEntries(new FormData(form).entries());
+        // Si no envían costo, backend puede calcular; enviamos si se ve > 0
+        payload.costo_unitario_crc = Number(payload.costo_unitario_crc||0) || undefined;
         try{
           await fetchJSON(api('/inventario/merma'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
           Toast('Merma registrada','success');
@@ -1048,6 +1272,7 @@ route('#/inventario', async (root)=>{
   }
 });
 
+/* ================= FINANZAS ================= */
 route('#/finanzas', async (root)=>{
   const tabs = document.createElement('div'); tabs.className='tabs';
   tabs.innerHTML = `
@@ -1187,7 +1412,7 @@ route('#/finanzas', async (root)=>{
   switchTab('cuentas');
 });
 
-/* ---------- PLANILLAS (diario -> vista semanal) ---------- */
+/* ================= PLANILLAS ================= */
 route('#/planillas', async (root) => {
   // Panel superior: crear planilla y filtros
   const top = document.createElement('div'); top.className = 'panel';
@@ -1268,6 +1493,7 @@ route('#/planillas', async (root) => {
 
     detailWrap.innerHTML = `
       <h3>Planilla #${id} · Semana que inicia ${fmt.date(data.semana_inicio)}</h3>
+
       <div class="form-grid" style="margin-bottom:8px">
         <label class="field"><span>Empleado</span>
           <select name="emp_sel"></select>
@@ -1284,6 +1510,23 @@ route('#/planillas', async (root) => {
       </div>
 
       <div class="subpanel">
+        <h4>Captura diaria rápida</h4>
+        <div class="form-grid">
+          <label class="field"><span>Fecha</span><input name="cap_fecha" type="date"></label>
+          <label class="field"><span>Empleado</span><select name="cap_emp"></select></label>
+          <label class="field"><span>Horas normales</span><input name="cap_reg" type="number" step="0.01" value="0"></label>
+          <label class="field"><span>Horas extra</span><input name="cap_ext" type="number" step="0.01" value="0"></label>
+          <label class="field"><span>Horas dobles</span><input name="cap_dob" type="number" step="0.01" value="0"></label>
+          <label class="field"><span>₡/h extra</span><input name="cap_tar_ext" type="number" step="0.01" value="0"></label>
+          <label class="field"><span>₡/h doble</span><input name="cap_tar_dob" type="number" step="0.01" value="0"></label>
+          <div class="form-actions">
+            <button id="btnCapGuardar" class="btn-primary">Guardar día</button>
+          </div>
+        </div>
+        <small class="muted">Esta captura escribe en los días del detalle del empleado. Si el empleado no está en la planilla, agrégalo arriba primero.</small>
+      </div>
+
+      <div class="subpanel">
         <h4>Factores de cálculo (vista)</h4>
         <div class="form-grid">
           <label class="field"><span>Factor extra</span><input name="fx" type="number" step="0.1" value="1.5"></label>
@@ -1294,12 +1537,32 @@ route('#/planillas', async (root) => {
 
       <div id="detTabla"></div>
       <div id="resumenSemanal" style="margin-top:12px"></div>
+
+      <div class="subpanel" style="margin-top:12px">
+        <h4>Pagos de planilla</h4>
+        <div class="form-grid">
+          <label class="field"><span>Fecha</span><input name="pay_fecha" type="date" value="${today()}"></label>
+          <label class="field"><span>Empleado</span><select name="pay_emp"></select></label>
+          <label class="field"><span>Monto (CRC)</span><input name="pay_monto" type="number" step="0.01" value="0"></label>
+          <label class="field"><span>Método</span><input name="pay_metodo" placeholder="Transferencia, Efectivo…"></label>
+          <label class="field"><span>Nota</span><input name="pay_nota" placeholder="Opcional"></label>
+          <div class="form-actions"><button id="btnAddPago" class="btn">Registrar pago</button></div>
+        </div>
+        <div id="tablaPagos" style="margin-top:10px"></div>
+      </div>
     `;
 
-    // cargar empleados al select
+    // cargar empleados a selects
     const sel = detailWrap.querySelector('select[name="emp_sel"]');
     sel.innerHTML = '<option value="">Seleccione…</option>';
     Store.state.empleados.forEach(e => sel.appendChild(new Option(e.nombre, e.id)));
+
+    const selCap = detailWrap.querySelector('select[name="cap_emp"]');
+    const selPay = detailWrap.querySelector('select[name="pay_emp"]');
+    [selCap, selPay].forEach(s=>{
+      s.innerHTML = '<option value="">Seleccione…</option>';
+      Store.state.empleados.forEach(e => s.appendChild(new Option(e.nombre, e.id)));
+    });
 
     $('#btnAddEmp', detailWrap).onclick = async ()=>{
       const empleado_id = Number(sel.value || 0) || null;
@@ -1316,6 +1579,65 @@ route('#/planillas', async (root) => {
       }catch(e){ Toast(e.message,'error'); }
     };
 
+    // Captura diaria rápida
+    $('#btnCapGuardar', detailWrap).onclick = async ()=>{
+      const fecha = detailWrap.querySelector('input[name="cap_fecha"]').value;
+      const empId = Number(detailWrap.querySelector('select[name="cap_emp"]').value||0);
+      if (!fecha || !empId) return Toast('Elige fecha y empleado','error');
+
+      const det = (data.detalles||[]).find(d=> Number(d.empleado_id)===empId);
+      if (!det) return Toast('Primero agrega el empleado a la planilla (arriba).','error');
+
+      const payload = {
+        dias: [{
+          fecha,
+          horas_reg: Number(detailWrap.querySelector('input[name="cap_reg"]').value||0),
+          horas_extra: Number(detailWrap.querySelector('input[name="cap_ext"]').value||0),
+          horas_doble: Number(detailWrap.querySelector('input[name="cap_dob"]').value||0),
+          feriado: false,
+          horas_feriado: 0,
+          tarifa_extra_crc: Number(detailWrap.querySelector('input[name="cap_tar_ext"]').value||0),
+          tarifa_doble_crc: Number(detailWrap.querySelector('input[name="cap_tar_dob"]').value||0),
+        }]
+      };
+      try{
+        await fetchJSON(api(`/planillas/${id}/detalles/${det.id}/dias`), {
+          method:'PUT', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify(payload)
+        });
+        Toast('Día guardado','success');
+        const fresh = await fetchJSON(api(`/planillas/${id}`));
+        renderDetalles(id, fresh);
+      }catch(e){ Toast(e.message,'error'); }
+    };
+
+    // Pagos
+    async function loadPagos(){
+      const pagos = await fetchJSON(api(`/planillas/${id}/pagos`)).catch(()=>[]);
+      const cont = $('#tablaPagos', detailWrap); cont.innerHTML='';
+      cont.appendChild(Table({columns:[
+        {key:'fecha', label:'Fecha', format:fmt.date},
+        {key:'empleado_nombre', label:'Empleado'},
+        {key:'monto_crc', label:'Monto', format:fmt.money},
+        {key:'metodo', label:'Método'},
+        {key:'nota', label:'Nota'}
+      ], rows: pagos}));
+    }
+    $('#btnAddPago', detailWrap).onclick = async ()=>{
+      const body = {
+        fecha: detailWrap.querySelector('input[name="pay_fecha"]').value,
+        empleado_id: Number(detailWrap.querySelector('select[name="pay_emp"]').value||0) || null,
+        monto_crc: Number(detailWrap.querySelector('input[name="pay_monto"]').value||0),
+        metodo: detailWrap.querySelector('input[name="pay_metodo"]').value || null,
+        nota: detailWrap.querySelector('input[name="pay_nota"]').value || null,
+      };
+      try{
+        await fetchJSON(api(`/planillas/${id}/pagos`), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+        Toast('Pago registrado','success'); await loadPagos();
+      }catch(e){ Toast(e.message,'error'); }
+    };
+    await loadPagos();
+
     renderDetalles(id, data);
   }
 
@@ -1324,25 +1646,21 @@ route('#/planillas', async (root) => {
     const fd = Number(detailWrap.querySelector('input[name="fd"]').value||2.0);
     const ff = Number(detailWrap.querySelector('input[name="ff"]').value||2.0);
 
-    // Tabla de empleados con botón "Editar diario"
     const rows = (data.detalles||[]).map(d => {
       const z = d.resumen || {};
       const tarifa = Number(d.tarifa_hora_crc||0);
-      const subtotal = tarifa * Number(z.reg||0); // salario base (solo horas reg)
+      const subtotal = tarifa * Number(z.reg||0);
       const diasTrab = Number(z.dias_trab||0);
       const salarioDiarioProm = diasTrab ? (subtotal / diasTrab) : 0;
 
-      // extras
       const hExt = Number(z.ext||0);
       const pxExt = tarifa * fx;
       const totExt = hExt * pxExt;
 
-      // feriados
       const ferDias = Number(z.feriados||0);
       const hFeriado = Number(z.horas_feriado||0);
       const totFeriados = hFeriado * tarifa * ff;
 
-      // dobles
       const hDob = Number(z.dob||0);
       const pxDob = tarifa * fd;
       const totDob = hDob * pxDob;
@@ -1405,7 +1723,7 @@ route('#/planillas', async (root) => {
     });
     wrap.appendChild(table); cont.appendChild(wrap);
 
-    // Resumen semanal (totales de toda la planilla)
+    // Resumen semanal
     const R = rows.reduce((acc, r) => {
       acc.subtotal += r.subtotal;
       acc.totExt  += r.totExt;
@@ -1491,7 +1809,6 @@ route('#/planillas', async (root) => {
             body: JSON.stringify(payload)
           });
           Toast('Horas diarias guardadas','success');
-          // recargar detalle
           const data = await fetchJSON(api(`/planillas/${planillaId}`));
           renderDetalles(planillaId, data);
         }catch(e){ Toast(e.message,'error'); return false; }
@@ -1500,7 +1817,7 @@ route('#/planillas', async (root) => {
   }
 });
 
-// Búsqueda global (defensiva)
+/* ================= BÚSQUEDA GLOBAL ================= */
 const searchBtn = $('#searchBtn');
 if (searchBtn) searchBtn.onclick = ()=> doSearch();
 const globalSearch = $('#globalSearch');
@@ -1532,7 +1849,7 @@ async function doSearch(){
   view.appendChild(grid);
 }
 
-// Tema
+/* ================= TEMA / NAV ================= */
 const themeToggle = $('#themeToggle');
 if (themeToggle) themeToggle.onclick = ()=>{
   const root = document.documentElement;
@@ -1548,9 +1865,10 @@ navigate(location.hash || '#/dashboard');
 // Re-render on catalogs update
 Store.subscribe(()=> {
   const h=location.hash;
-  if (['#/ventas','#/compras','#/productos','#/contactos','#/recetas','#/produccion','#/planillas'].includes(h)) navigate(h);
+  if (['#/ventas','#/compras','#/productos','#/contactos','#/recetas','#/produccion','#/planillas','#/inventario','#/finanzas'].includes(h)) navigate(h);
 });
 
 // Quick create -> ir a ventas
 const quick = $('#quickCreateBtn');
 if (quick) quick.onclick = () => { location.hash = '#/ventas'; };
+

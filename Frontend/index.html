@@ -4,9 +4,12 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>GlutenFree ERP</title>
+  <meta name="color-scheme" content="light dark" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
+<noscript>Este sistema requiere JavaScript habilitado.</noscript>
+
 <div class="layout">
   <!-- ========== Sidebar ========== -->
   <aside class="sidebar" role="navigation" aria-label="Menú principal">
@@ -47,7 +50,7 @@
         <button id="searchBtn" class="btn">Buscar</button>
       </div>
       <div class="right">
-        <button id="quickCreateBtn" class="btn-primary">+ Crear</button>
+        <button id="quickCreateBtn" class="btn-primary" aria-haspopup="dialog" aria-controls="modal">+ Crear</button>
       </div>
     </header>
 
@@ -74,6 +77,352 @@
 <!-- ========== Toasts ========== -->
 <div id="toastContainer" class="toasts" aria-live="polite" aria-atomic="true"></div>
 
+<!-- ===========================
+     NEW: Templates de vistas
+     =========================== -->
+
+<!-- NEW: Quick Create contenido (usado por el botón + Crear) -->
+<template id="tpl-quick-create">
+  <div class="grid gap-2">
+    <button class="btn-outline" data-action="openForm" data-form="producto-mp">➕ Producto (Materia Prima)</button>
+    <button class="btn-outline" data-action="openForm" data-form="producto-pt">➕ Producto (Terminado)</button>
+    <button class="btn-outline" data-action="openForm" data-form="receta">➕ Receta</button>
+    <button class="btn-outline" data-action="openForm" data-form="planilla">➕ Planilla (Periodo)</button>
+    <button class="btn-outline" data-action="openForm" data-form="merma">➕ Registrar Merma</button>
+  </div>
+</template>
+
+<!-- NEW: Form Producto - Materia Prima -->
+<template id="tpl-producto-mp">
+  <form id="formProductoMP" class="form grid gap-3" data-entity="producto" data-kind="mp">
+    <div class="grid cols-2 gap-2">
+      <label>SKU
+        <input id="mp_sku" name="sku" required placeholder="MP-0001" />
+      </label>
+      <label>Nombre
+        <input id="mp_nombre" name="nombre" required placeholder="Harina de arroz" />
+      </label>
+    </div>
+    <div class="grid cols-3 gap-2">
+      <label>UOM
+        <select id="mp_uom_id" name="uom_id" required></select>
+      </label>
+      <label>Costo unitario (CRC)
+        <input id="mp_costo_unitario" name="costo_unitario" type="number" step="0.0001" min="0" required />
+      </label>
+      <label>Stock inicial
+        <input id="mp_stock_inicial" name="stock_inicial" type="number" step="0.0001" min="0" value="0" />
+      </label>
+    </div>
+    <div class="grid cols-2 gap-2">
+      <label>Proveedor
+        <select id="mp_proveedor_id" name="proveedor_id"></select>
+      </label>
+      <label>Fecha ingreso
+        <input id="mp_fecha_ingreso" name="fecha_ingreso" type="date" />
+      </label>
+    </div>
+    <div class="hint">
+      * El costo unitario se usará para valorizar ingresos, consumos en recetas y mermas.
+    </div>
+    <div class="flex end gap-2">
+      <button type="button" class="btn" data-action="cancel">Cancelar</button>
+      <button type="submit" class="btn-primary">Guardar</button>
+    </div>
+  </form>
+</template>
+
+<!-- NEW: Form Producto - Terminado -->
+<template id="tpl-producto-pt">
+  <form id="formProductoPT" class="form grid gap-3" data-entity="producto" data-kind="pt">
+    <div class="grid cols-2 gap-2">
+      <label>SKU
+        <input id="pt_sku" name="sku" required placeholder="PT-0001" />
+      </label>
+      <label>Nombre
+        <input id="pt_nombre" name="nombre" required placeholder="Pan brioche 6u" />
+      </label>
+    </div>
+    <div class="grid cols-3 gap-2">
+      <label>UOM
+        <select id="pt_uom_id" name="uom_id" required></select>
+      </label>
+      <label>Costo estándar (CRC)
+        <input id="pt_costo_estandar" name="costo_estandar" type="number" step="0.0001" min="0" />
+      </label>
+      <label>Precio de venta (CRC)
+        <input id="pt_precio_venta" name="precio_venta" type="number" step="0.01" min="0" />
+      </label>
+    </div>
+    <div class="grid cols-2 gap-2">
+      <label>Stock inicial
+        <input id="pt_stock_inicial" name="stock_inicial" type="number" step="0.0001" min="0" value="0" />
+      </label>
+      <label>Fecha ingreso
+        <input id="pt_fecha_ingreso" name="fecha_ingreso" type="date" />
+      </label>
+    </div>
+    <div class="hint">
+      * El costo estándar puede recalcularse desde recetas y producción (materiales + mano de obra + merma).
+    </div>
+    <div class="flex end gap-2">
+      <button type="button" class="btn" data-action="cancel">Cancelar</button>
+      <button type="submit" class="btn-primary">Guardar</button>
+    </div>
+  </form>
+</template>
+
+<!-- NEW: Form Receta (BOM + costos) -->
+<template id="tpl-receta">
+  <form id="formReceta" class="form grid gap-3" data-entity="receta">
+    <div class="grid cols-2 gap-2">
+      <label>Producto terminado
+        <select id="receta_producto_pt_id" name="producto_pt_id" required></select>
+      </label>
+      <label>Rinde (UOM del PT)
+        <input id="receta_rinde" name="rinde" type="number" step="0.0001" min="0.0001" required />
+      </label>
+    </div>
+
+    <fieldset class="fieldset">
+      <legend>Ingredientes (con costo)</legend>
+      <div class="table like">
+        <div class="row head">
+          <div>Ingrediente (MP/PT)</div>
+          <div>UOM</div>
+          <div>Cantidad</div>
+          <div>Costo unitario</div>
+          <div>Otros costos</div>
+          <div>Subtotal</div>
+          <div></div>
+        </div>
+        <div id="ingredientesBody" class="rows" data-collection="ingredientes"></div>
+        <div class="row footer">
+          <button type="button" class="btn-outline" id="btnAddIngrediente" data-action="addIngrediente">+ Agregar ingrediente</button>
+        </div>
+      </div>
+      <div class="totales grid cols-3 gap-2">
+        <label>Materiales (CRC)
+          <input id="receta_total_materiales" name="total_materiales" type="number" step="0.01" readonly />
+        </label>
+        <label>Mano de obra (CRC)
+          <input id="receta_total_mano_obra" name="total_mano_obra" type="number" step="0.01" value="0" />
+        </label>
+        <label>Merma estimada (CRC)
+          <input id="receta_total_merma" name="total_merma" type="number" step="0.01" value="0" />
+        </label>
+      </div>
+      <div class="grid cols-3 gap-2">
+        <label>Costos indirectos (CRC)
+          <input id="receta_indirectos" name="indirectos" type="number" step="0.01" value="0" />
+        </label>
+        <label>Costo total receta (CRC)
+          <input id="receta_costo_total" name="costo_total" type="number" step="0.01" readonly />
+        </label>
+        <label>Costo por unidad (CRC)
+          <input id="receta_costo_unitario" name="costo_unitario" type="number" step="0.0001" readonly />
+        </label>
+      </div>
+    </fieldset>
+
+    <div class="flex end gap-2">
+      <button type="button" class="btn" data-action="cancel">Cancelar</button>
+      <button type="submit" class="btn-primary">Guardar</button>
+    </div>
+  </form>
+
+  <!-- Fila dinámica de ingrediente -->
+  <template id="tpl-receta-ingrediente-row">
+    <div class="row" data-row="ingrediente">
+      <div>
+        <select name="producto_id" class="receta_producto_id" required></select>
+      </div>
+      <div>
+        <select name="uom_id" class="receta_uom_id" required></select>
+      </div>
+      <div>
+        <input name="cantidad" class="receta_cantidad" type="number" step="0.0001" min="0.0001" required />
+      </div>
+      <div>
+        <input name="costo_unitario" class="receta_costo_unitario" type="number" step="0.0001" min="0" required />
+      </div>
+      <div>
+        <input name="otros_costos" class="receta_otros_costos" type="number" step="0.01" value="0" />
+      </div>
+      <div>
+        <input name="subtotal" class="receta_subtotal" type="number" step="0.01" readonly />
+      </div>
+      <div>
+        <button type="button" class="icon-btn" data-action="removeRow" title="Eliminar">🗑️</button>
+      </div>
+    </div>
+  </template>
+</template>
+
+<!-- NEW: Form Planilla (selección de empleados y horas) -->
+<template id="tpl-planilla">
+  <form id="formPlanilla" class="form grid gap-3" data-entity="planilla">
+    <div class="grid cols-3 gap-2">
+      <label>Periodo desde
+        <input id="pl_desde" name="desde" type="date" required />
+      </label>
+      <label>Periodo hasta
+        <input id="pl_hasta" name="hasta" type="date" required />
+      </label>
+      <label>Centro de costo
+        <select id="pl_centro_costo_id" name="centro_costo_id"></select>
+      </label>
+    </div>
+
+    <fieldset class="fieldset">
+      <legend>Horas por empleado</legend>
+      <div class="table like">
+        <div class="row head">
+          <div>Empleado</div>
+          <div>Tarifa (CRC/h)</div>
+          <div>Horas reg.</div>
+          <div>Horas extra 1.5x</div>
+          <div>Horas extra 2.0x</div>
+          <div>Costo</div>
+          <div></div>
+        </div>
+        <div id="planillaBody" class="rows" data-collection="planilla-empleados"></div>
+        <div class="row footer">
+          <button type="button" class="btn-outline" id="btnAddEmpleadoPlanilla" data-action="addEmpleadoPlanilla">+ Agregar empleado</button>
+        </div>
+      </div>
+      <div class="grid cols-4 gap-2">
+        <label>Total regular (CRC)
+          <input id="pl_total_regular" name="total_regular" type="number" step="0.01" readonly />
+        </label>
+        <label>Total extra 1.5x (CRC)
+          <input id="pl_total_extra" name="total_extra" type="number" step="0.01" readonly />
+        </label>
+        <label>Total extra 2.0x (CRC)
+          <input id="pl_total_doble" name="total_doble" type="number" step="0.01" readonly />
+        </label>
+        <label>Total planilla (CRC)
+          <input id="pl_total" name="total" type="number" step="0.01" readonly />
+        </label>
+      </div>
+    </fieldset>
+
+    <div class="hint">
+      * Este costo puede prorratearse a los lotes de producción para actualizar el costo del producto terminado.
+    </div>
+
+    <div class="flex end gap-2">
+      <button type="button" class="btn" data-action="cancel">Cancelar</button>
+      <button type="submit" class="btn-primary">Guardar</button>
+    </div>
+  </form>
+
+  <!-- Fila dinámica empleado-planilla -->
+  <template id="tpl-planilla-row">
+    <div class="row" data-row="planilla-empleado">
+      <div>
+        <select name="empleado_id" class="pl_empleado_id" required></select>
+      </div>
+      <div>
+        <input name="tarifa_hora" class="pl_tarifa_hora" type="number" step="0.01" min="0" required />
+      </div>
+      <div>
+        <input name="horas_reg" class="pl_horas_reg" type="number" step="0.01" min="0" value="0" />
+      </div>
+      <div>
+        <input name="horas_extra" class="pl_horas_extra" type="number" step="0.01" min="0" value="0" />
+      </div>
+      <div>
+        <input name="horas_doble" class="pl_horas_doble" type="number" step="0.01" min="0" value="0" />
+      </div>
+      <div>
+        <input name="costo_total" class="pl_costo_total" type="number" step="0.01" readonly />
+      </div>
+      <div>
+        <button type="button" class="icon-btn" data-action="removeRow" title="Eliminar">🗑️</button>
+      </div>
+    </div>
+  </template>
+</template>
+
+<!-- NEW: Form Merma (impacto de costo) -->
+<template id="tpl-merma">
+  <form id="formMerma" class="form grid gap-3" data-entity="merma">
+    <div class="grid cols-3 gap-2">
+      <label>Producto
+        <select id="merma_producto_id" name="producto_id" required></select>
+      </label>
+      <label>UOM
+        <select id="merma_uom_id" name="uom_id" required></select>
+      </label>
+      <label>Cantidad perdida
+        <input id="merma_cantidad" name="cantidad" type="number" step="0.0001" min="0.0001" required />
+      </label>
+    </div>
+    <div class="grid cols-3 gap-2">
+      <label>Costo unitario (auto)
+        <input id="merma_costo_unitario" name="costo_unitario" type="number" step="0.0001" readonly />
+      </label>
+      <label>Costo total merma (CRC)
+        <input id="merma_costo_total" name="costo_total" type="number" step="0.01" readonly />
+      </label>
+      <label>Fecha
+        <input id="merma_fecha" name="fecha" type="date" />
+      </label>
+    </div>
+    <label>Motivo / Observaciones
+      <textarea id="merma_motivo" name="motivo" rows="2" placeholder="Derrame, vencimiento, daño, etc."></textarea>
+    </label>
+    <div class="hint">
+      * Al guardar, se descuenta stock y se registra asiento de costo (contra gasto o contra lote si aplica).
+    </div>
+    <div class="flex end gap-2">
+      <button type="button" class="btn" data-action="cancel">Cancelar</button>
+      <button type="submit" class="btn-primary">Guardar</button>
+    </div>
+  </form>
+</template>
+
+<!-- NEW: Form Movimiento de Inventario (genérico, por si lo necesitás) -->
+<template id="tpl-movimiento-inventario">
+  <form id="formMovimientoInventario" class="form grid gap-3" data-entity="movimiento-inventario">
+    <div class="grid cols-3 gap-2">
+      <label>Tipo
+        <select id="mov_tipo" name="tipo" required>
+          <option value="ingreso">Ingreso</option>
+          <option value="consumo">Consumo</option>
+          <option value="ajuste">Ajuste</option>
+          <option value="produccion">Producción (PT)</option>
+        </select>
+      </label>
+      <label>Producto
+        <select id="mov_producto_id" name="producto_id" required></select>
+      </label>
+      <label>UOM
+        <select id="mov_uom_id" name="uom_id" required></select>
+      </label>
+    </div>
+    <div class="grid cols-3 gap-2">
+      <label>Cantidad
+        <input id="mov_cantidad" name="cantidad" type="number" step="0.0001" min="0.0001" required />
+      </label>
+      <label>Costo unitario
+        <input id="mov_costo_unitario" name="costo_unitario" type="number" step="0.0001" min="0" />
+      </label>
+      <label>Documento ref.
+        <input id="mov_documento" name="documento" placeholder="OC-123 / PROD-456" />
+      </label>
+    </div>
+    <label>Notas
+      <textarea id="mov_notas" name="notas" rows="2"></textarea>
+    </label>
+    <div class="flex end gap-2">
+      <button type="button" class="btn" data-action="cancel">Cancelar</button>
+      <button type="submit" class="btn-primary">Guardar</button>
+    </div>
+  </form>
+</template>
+
 <script>
   // Opcional: define window.API_BASE si tu API no es http://localhost:8000
   // window.API_BASE = 'https://tu-dominio.com';
@@ -82,3 +431,4 @@
 <script src="./app.js"></script>
 </body>
 </html>
+

@@ -162,3 +162,25 @@ body {
 a:focus, button:focus, input:focus, select:focus, textarea:focus {
   outline: 2px solid var(--primary); outline-offset: 2px;
 }
+
+:root.light { --btn-bg:#f1f5f9; --btn-fg:#0f172a; --btn-bd:#cbd5e1; }
+:root.dark  { --btn-bg:#1f2937; --btn-fg:#e5e7eb; --btn-bd:#334155; }
+
+.btn, .btn-primary, .icon-btn {
+  padding: .45rem .7rem;
+  border-radius: 8px;
+  border: 1px solid var(--btn-bd);
+  background: var(--btn-bg);
+  color: var(--btn-fg);
+  line-height: 1.1;
+}
+.btn-primary { font-weight: 600; }
+.icon-btn { min-width: 2rem; display: inline-flex; align-items:center; justify-content:center; }
+
+.btn:hover, .btn-primary:hover, .icon-btn:hover { filter: brightness(0.98); }
+.btn:focus-visible, .btn-primary:focus-visible, .icon-btn:focus-visible {
+  outline: 2px solid #60a5fa; outline-offset: 2px;
+}
+
+.toolbar .btn, .toolbar .btn-primary, .toolbar .icon-btn { margin-right: .4rem; }
+.table .btn { padding: .35rem .6rem; font-size: .85rem; }
