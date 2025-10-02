@@ -9,6 +9,11 @@ CREATE DATABASE IF NOT EXISTS dltaller_app
   DEFAULT COLLATE utf8mb4_0900_ai_ci;
 USE dltaller_app;
 
+-- Usuario dedicado para la aplicación
+CREATE USER IF NOT EXISTS 'gf_app'@'localhost' IDENTIFIED BY 'gf_app123!';
+GRANT ALL PRIVILEGES ON dltaller_app.* TO 'gf_app'@'localhost';
+FLUSH PRIVILEGES;
+
 SET NAMES utf8mb4;
 SET time_zone = '+00:00';
 SET SESSION sql_mode = 'STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION';
@@ -125,6 +130,9 @@ CREATE TABLE receta (
   producto_salida_id BIGINT,
   uom_salida_id BIGINT,
   nota TEXT,
+  mano_obra_crc DECIMAL(18,6) DEFAULT 0,
+  merma_crc DECIMAL(18,6) DEFAULT 0,
+  indirectos_pct DECIMAL(9,6) DEFAULT NULL,
   activo TINYINT(1) NOT NULL DEFAULT 1,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
@@ -138,6 +146,8 @@ CREATE TABLE receta_det (
   producto_id BIGINT NOT NULL,
   uom_id BIGINT NOT NULL,
   cantidad DECIMAL(18,6) NOT NULL,
+  costo_unitario_crc DECIMAL(18,6) DEFAULT 0,
+  otros_costos_crc DECIMAL(18,6) DEFAULT 0,
   nota VARCHAR(200),
   CONSTRAINT fk_receta_det_receta FOREIGN KEY (receta_id) REFERENCES receta(id) ON DELETE CASCADE,
   CONSTRAINT fk_receta_det_prod   FOREIGN KEY (producto_id) REFERENCES producto(id),
@@ -165,6 +175,9 @@ CREATE TABLE tanda (
   ubicacion_origen_id BIGINT,
   ubicacion_destino_id BIGINT,
   nota VARCHAR(240),
+  factor_extra DECIMAL(6,3) DEFAULT NULL,
+  factor_doble DECIMAL(6,3) DEFAULT NULL,
+  factor_feriado DECIMAL(6,3) DEFAULT NULL,
   created_by BIGINT,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_tanda_receta  FOREIGN KEY (receta_id) REFERENCES receta(id),
@@ -213,6 +226,9 @@ CREATE TABLE compra (
   fecha_limite DATE,
   estado_cobro_pago ENUM('PENDIENTE','PAGADO') NOT NULL DEFAULT 'PENDIENTE',
   nota VARCHAR(240),
+  factor_extra DECIMAL(6,3) DEFAULT NULL,
+  factor_doble DECIMAL(6,3) DEFAULT NULL,
+  factor_feriado DECIMAL(6,3) DEFAULT NULL,
   created_by BIGINT,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
@@ -250,6 +266,9 @@ CREATE TABLE venta (
   estado_cobro_pago ENUM('PENDIENTE','PAGADO') NOT NULL DEFAULT 'PENDIENTE',
   ruta_id BIGINT,
   nota VARCHAR(240),
+  factor_extra DECIMAL(6,3) DEFAULT NULL,
+  factor_doble DECIMAL(6,3) DEFAULT NULL,
+  factor_feriado DECIMAL(6,3) DEFAULT NULL,
   created_by BIGINT,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
@@ -293,6 +312,9 @@ CREATE TABLE gasto (
   proveedor_id BIGINT,
   metodo_pago ENUM('EFECTIVO','TRANSFERENCIA','TARJETA','OTRO') NOT NULL DEFAULT 'EFECTIVO',
   nota VARCHAR(240),
+  factor_extra DECIMAL(6,3) DEFAULT NULL,
+  factor_doble DECIMAL(6,3) DEFAULT NULL,
+  factor_feriado DECIMAL(6,3) DEFAULT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_gasto_categoria FOREIGN KEY (categoria_id) REFERENCES categoria_gasto(id),
   CONSTRAINT fk_gasto_proveedor FOREIGN KEY (proveedor_id) REFERENCES proveedor(id),
@@ -308,6 +330,9 @@ CREATE TABLE inversion (
   monto_crc DECIMAL(18,6) NOT NULL,
   proveedor_id BIGINT,
   nota VARCHAR(240),
+  factor_extra DECIMAL(6,3) DEFAULT NULL,
+  factor_doble DECIMAL(6,3) DEFAULT NULL,
+  factor_feriado DECIMAL(6,3) DEFAULT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_inversion_proveedor FOREIGN KEY (proveedor_id) REFERENCES proveedor(id),
   CONSTRAINT ck_inversion_monto CHECK (monto_crc > 0)
@@ -322,6 +347,7 @@ CREATE TABLE empleado (
   telefono VARCHAR(40),
   email VARCHAR(120),
   direccion VARCHAR(240),
+  tarifa_hora_crc DECIMAL(18,6) NOT NULL DEFAULT 0,
   activo TINYINT(1) NOT NULL DEFAULT 1,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uq_empleado_num_doc (num_doc)
@@ -331,6 +357,9 @@ CREATE TABLE planilla_semana (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   semana_inicio DATE NOT NULL,
   nota VARCHAR(240),
+  factor_extra DECIMAL(6,3) DEFAULT NULL,
+  factor_doble DECIMAL(6,3) DEFAULT NULL,
+  factor_feriado DECIMAL(6,3) DEFAULT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uq_planilla_semana (semana_inicio)
 ) ENGINE=InnoDB;
@@ -360,6 +389,9 @@ CREATE TABLE vacaciones (
   dias_total DECIMAL(6,2) NOT NULL,
   estado ENUM('SOLICITADO','APROBADO','RECHAZADO','GOZADO') NOT NULL DEFAULT 'SOLICITADO',
   nota VARCHAR(240),
+  factor_extra DECIMAL(6,3) DEFAULT NULL,
+  factor_doble DECIMAL(6,3) DEFAULT NULL,
+  factor_feriado DECIMAL(6,3) DEFAULT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_vac_empleado FOREIGN KEY (empleado_id) REFERENCES empleado(id),
   CONSTRAINT ck_vac_dias  CHECK (dias_total > 0),
@@ -390,12 +422,48 @@ CREATE TABLE cobro (
   metodo ENUM('EFECTIVO','TRANSFERENCIA','TARJETA','OTRO') NOT NULL DEFAULT 'EFECTIVO',
   referencia VARCHAR(120),
   nota VARCHAR(240),
+  factor_extra DECIMAL(6,3) DEFAULT NULL,
+  factor_doble DECIMAL(6,3) DEFAULT NULL,
+  factor_feriado DECIMAL(6,3) DEFAULT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_cobro_venta FOREIGN KEY (venta_id) REFERENCES venta(id) ON DELETE CASCADE,
   CONSTRAINT ck_cobro_monto CHECK (monto_crc > 0)
 ) ENGINE=InnoDB;
 
 CREATE INDEX ix_cobro_venta ON cobro(venta_id);
+
+-- Detalle de días por empleado en la semana
+CREATE TABLE IF NOT EXISTS planilla_det_dia (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  det_id BIGINT NOT NULL,
+  fecha DATE NOT NULL,
+  horas_reg DECIMAL(10,2) NOT NULL DEFAULT 0,
+  horas_extra DECIMAL(10,2) NOT NULL DEFAULT 0,
+  horas_doble DECIMAL(10,2) NOT NULL DEFAULT 0,
+  feriado TINYINT(1) NOT NULL DEFAULT 0,
+  horas_feriado DECIMAL(10,2) NOT NULL DEFAULT 0,
+  CONSTRAINT fk_pldia_det FOREIGN KEY (det_id) REFERENCES planilla_det(id) ON DELETE CASCADE,
+  UNIQUE KEY uq_pldia_det_fecha (det_id, fecha),
+  KEY ix_pldia_fecha (fecha)
+) ENGINE=InnoDB;
+
+-- Pagos de planilla (por planilla, opcionalmente por empleado)
+CREATE TABLE IF NOT EXISTS planilla_pago (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  planilla_id BIGINT NOT NULL,
+  fecha DATE NOT NULL,
+  empleado_id BIGINT NULL,
+  monto_crc DECIMAL(18,6) NOT NULL DEFAULT 0,
+  metodo VARCHAR(80),
+  nota VARCHAR(240),
+  factor_extra DECIMAL(6,3) DEFAULT NULL,
+  factor_doble DECIMAL(6,3) DEFAULT NULL,
+  factor_feriado DECIMAL(6,3) DEFAULT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_plp_planilla FOREIGN KEY (planilla_id) REFERENCES planilla_semana(id) ON DELETE CASCADE,
+  CONSTRAINT fk_plp_empleado FOREIGN KEY (empleado_id) REFERENCES empleado(id)
+) ENGINE=InnoDB;
+
 CREATE INDEX ix_cobro_fecha ON cobro(fecha);
 
 CREATE TABLE pago (
@@ -406,6 +474,9 @@ CREATE TABLE pago (
   metodo ENUM('EFECTIVO','TRANSFERENCIA','TARJETA','OTRO') NOT NULL DEFAULT 'EFECTIVO',
   referencia VARCHAR(120),
   nota VARCHAR(240),
+  factor_extra DECIMAL(6,3) DEFAULT NULL,
+  factor_doble DECIMAL(6,3) DEFAULT NULL,
+  factor_feriado DECIMAL(6,3) DEFAULT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_pago_compra FOREIGN KEY (compra_id) REFERENCES compra(id) ON DELETE CASCADE,
   CONSTRAINT ck_pago_monto CHECK (monto_crc > 0)
@@ -429,6 +500,9 @@ CREATE TABLE inv_mov (
   ref_id BIGINT,
   ubicacion_id BIGINT,
   nota VARCHAR(240),
+  factor_extra DECIMAL(6,3) DEFAULT NULL,
+  factor_doble DECIMAL(6,3) DEFAULT NULL,
+  factor_feriado DECIMAL(6,3) DEFAULT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_imov_producto FOREIGN KEY (producto_id) REFERENCES producto(id),
   CONSTRAINT fk_imov_uom      FOREIGN KEY (uom_id) REFERENCES uom(id),
@@ -448,6 +522,9 @@ CREATE TABLE merma (
   ubicacion_id BIGINT,
   motivo VARCHAR(160),
   nota VARCHAR(240),
+  factor_extra DECIMAL(6,3) DEFAULT NULL,
+  factor_doble DECIMAL(6,3) DEFAULT NULL,
+  factor_feriado DECIMAL(6,3) DEFAULT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_merma_prod FOREIGN KEY (producto_id) REFERENCES producto(id),
   CONSTRAINT fk_merma_uom  FOREIGN KEY (uom_id) REFERENCES uom(id),
@@ -859,6 +936,11 @@ GROUP BY r.id;
    ========================================================= */
 USE dltaller_app;
 
+-- Usuario dedicado para la aplicación
+CREATE USER IF NOT EXISTS 'gf_app'@'localhost' IDENTIFIED BY 'gf_app123!';
+GRANT ALL PRIVILEGES ON dltaller_app.* TO 'gf_app'@'localhost';
+FLUSH PRIVILEGES;
+
 -- ============= 1) Agregar columnas si faltan (producto) =============
 -- precio_venta_crc (para PT) y costo_estandar_crc (para MP)
 
@@ -973,7 +1055,6 @@ DETERMINISTIC
 READS SQL DATA
 BEGIN
   DECLARE v_costo DECIMAL(18,6) DEFAULT NULL;
-
   -- último costo con fecha <= fecha_ref
   SELECT cd.costo_unitario_crc
     INTO v_costo
@@ -983,7 +1064,6 @@ BEGIN
     AND c.fecha <= fecha_ref
   ORDER BY c.fecha DESC, cd.id DESC
   LIMIT 1;
-
   IF v_costo IS NULL THEN
     -- fallback: costo_estandar del producto
     SELECT p.costo_estandar_crc
@@ -992,7 +1072,6 @@ BEGIN
     WHERE p.id = mp_id
     LIMIT 1;
   END IF;
-
   RETURN IFNULL(v_costo, 0);
 END $$
 DELIMITER ;
@@ -1019,6 +1098,11 @@ DELIMITER ;
    Añade columnas, vistas, función y triggers de flujo/costeo
    ========================================================= */
 USE dltaller_app;
+
+-- Usuario dedicado para la aplicación
+CREATE USER IF NOT EXISTS 'gf_app'@'localhost' IDENTIFIED BY 'gf_app123!';
+GRANT ALL PRIVILEGES ON dltaller_app.* TO 'gf_app'@'localhost';
+FLUSH PRIVILEGES;
 
 -- ============= 1) Agregar columnas si faltan (producto) =============
 -- precio_venta_crc (para PT) y costo_estandar_crc (para MP)
@@ -1131,7 +1215,6 @@ DETERMINISTIC
 READS SQL DATA
 BEGIN
   DECLARE v_costo DECIMAL(18,6) DEFAULT NULL;
-
   -- último costo con fecha <= fecha_ref
   SELECT cd.costo_unitario_crc
     INTO v_costo
@@ -1141,7 +1224,6 @@ BEGIN
     AND c.fecha <= fecha_ref
   ORDER BY c.fecha DESC, cd.id DESC
   LIMIT 1;
-
   IF v_costo IS NULL THEN
     -- fallback: costo_estandar del producto
     SELECT p.costo_estandar_crc
@@ -1150,7 +1232,6 @@ BEGIN
     WHERE p.id = mp_id
     LIMIT 1;
   END IF;
-
   RETURN IFNULL(v_costo, 0);
 END$$
 DELIMITER ;
@@ -1303,3 +1384,6 @@ CREATE TABLE IF NOT EXISTS config_costeo (
 
 INSERT IGNORE INTO config_costeo (id, metodo, parametro_json)
 VALUES (1, 'PORCENTAJE_GLOBAL', JSON_OBJECT('pct', 0.18));
+
+
+

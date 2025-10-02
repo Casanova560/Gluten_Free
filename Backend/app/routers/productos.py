@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from ..utils.deps import db_dep
 
 router = APIRouter(prefix="/productos", tags=["productos"])
@@ -69,3 +70,16 @@ def update_producto(producto_id: int, payload: dict, db = Depends(db_dep)):
     if not row:
         raise HTTPException(404, "producto no encontrado")
     return row
+
+@router.delete("/{producto_id}")
+def delete_producto(producto_id: int, db = Depends(db_dep)):
+    try:
+        res = db.execute(text("DELETE FROM producto WHERE id = :id"), {"id": producto_id})
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "No se puede eliminar el producto porque esta referenciado en otros registros")
+    if res.rowcount == 0:
+        raise HTTPException(404, "producto no encontrado")
+    return {"ok": True}
+

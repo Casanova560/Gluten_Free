@@ -17,6 +17,8 @@ from .routers import (
     costeo,
     planilla,
     reportes,
+    rutas,
+    vacaciones,
 )
 
 app = FastAPI(title="GlutenFree ERP API")
@@ -43,6 +45,8 @@ app.include_router(costos.router)      # /costos/mp
 app.include_router(costeo.router)      # /costeo/recetas/{id}, /costeo/tandas/{id}
 app.include_router(planilla.router)
 app.include_router(reportes.router)
+app.include_router(rutas.router, prefix="/rutas", tags=["rutas"])
+app.include_router(vacaciones.router, prefix="/vacaciones", tags=["vacaciones"])
 
 # Alias compatibles para costeo
 costeo_alias = APIRouter(prefix="/costeo", tags=["costeo"])

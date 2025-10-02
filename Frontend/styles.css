@@ -87,6 +87,9 @@ body {
 .view { padding: 16px; overflow: auto; }
 
 /* Buttons */
+
+.btn-outline { background: transparent; border: 1px dashed var(--btn-bd); color: var(--btn-fg); }
+.btn-outline:hover { background: var(--bg-soft); }
 .btn, .btn-primary, .icon-btn {
   border: 1px solid var(--border); background: var(--card); color: var(--text);
   border-radius: 10px; padding: 10px 14px; cursor: pointer;
@@ -182,5 +185,37 @@ a:focus, button:focus, input:focus, select:focus, textarea:focus {
   outline: 2px solid #60a5fa; outline-offset: 2px;
 }
 
+
+
+.info-banner { margin-bottom: 1rem; padding: 0.75rem 1rem; border-left: 4px solid var(--primary); background: var(--bg-soft); font-size: 0.9rem; line-height: 1.4; }
+.info-banner strong { color: var(--primary); }
+
+.chart-area { position: relative; min-height: 240px; }
+.chart-area canvas { max-height: 280px; }
+.planillas-summary { margin-top: 0.5rem; font-size: 0.85rem; display: grid; gap: 0.3rem; }
+.planillas-summary p { margin: 0; }
+.table-actions { display: inline-flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; }
+.table-actions .btn { padding: 0.35rem 0.6rem; font-size: 0.8rem; }
+.btn-group { display: inline-flex; gap: 0.4rem; align-items: center; }
 .toolbar .btn, .toolbar .btn-primary, .toolbar .icon-btn { margin-right: .4rem; }
 .table .btn { padding: .35rem .6rem; font-size: .85rem; }
+
+/* Dashboard slideshow */
+.slides { position: relative; display: grid; gap: 12px; }
+.slide { display: none; animation: fade .3s ease; }
+.slide.active { display: block; }
+.slide-nav { display: flex; gap: 8px; justify-content: space-between; align-items: center; }
+.slide-nav .dots { display: flex; gap: 6px; }
+.slide-nav .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
+.slide-nav .dot.active { background: var(--primary); }
+@keyframes fade { from { opacity: .6; transform: translateY(6px);} to { opacity: 1; transform: translateY(0);} }
+
+.slide-filter { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px; align-items:center; }
+.slide-filter button { padding:6px 12px; border-radius:999px; border:1px solid var(--border); background: var(--bg-soft); color: var(--text); font-size:12px; cursor:pointer; transition:background .2s ease, color .2s ease; }
+.slide-filter button.active { background: var(--primary); color: var(--primary-contrast); border-color: transparent; }
+
+.filter-controls { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:12px; }
+.filter-controls label { font-size:12px; color:var(--text-muted); display:flex; flex-direction:column; gap:4px; }
+.filter-controls input[type="month"] { padding:6px 10px; border-radius:8px; border:1px solid var(--border); background:var(--bg); color:var(--text); }
+.filter-controls .range-btn { padding:6px 12px; border-radius:999px; border:1px solid var(--border); background:var(--bg-soft); color:var(--text); cursor:pointer; transition:background .2s ease, color .2s ease; }
+.filter-controls .range-btn.active { background:var(--primary); color:var(--primary-contrast); border-color:transparent; }

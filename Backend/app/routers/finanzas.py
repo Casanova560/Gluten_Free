@@ -36,18 +36,27 @@ def cxp(db = Depends(db_dep)):
 
 @router.get("/config/indirectos")
 def get_cfg(db = Depends(db_dep)):
-    row = db.execute(text("SELECT method, pct FROM config_costeo LIMIT 1")).mappings().first()
-    return row or {"method":"PORCENTAJE_GLOBAL", "pct": 0.0}
+    # Compatibilidad: tabla config_costeo con columnas (metodo, parametro_json) {pct}
+    row = db.execute(text("SELECT metodo, parametro_json FROM config_costeo WHERE id=1")).mappings().first()
+    if not row:
+        return {"method":"PORCENTAJE_GLOBAL", "pct": 0.0}
+    metodo = row.get("metodo") or "PORCENTAJE_GLOBAL"
+    pj = row.get("parametro_json") or {}
+    try:
+        pct = float((pj or {}).get("pct", 0))
+    except Exception:
+        pct = 0.0
+    return {"method": metodo, "pct": pct}
 
 @router.put("/config/indirectos")
 def set_cfg(payload: dict, db = Depends(db_dep)):
-    method = payload.get("method") or "PORCENTAJE_GLOBAL"
+    metodo = payload.get("method") or "PORCENTAJE_GLOBAL"
     pct = float(payload.get("pct") or 0)
     db.execute(text("""
-        INSERT INTO config_costeo (id, method, pct)
-        VALUES (1, :method, :pct)
-        ON DUPLICATE KEY UPDATE method=VALUES(method), pct=VALUES(pct)
-    """), {"method": method, "pct": pct})
+        INSERT INTO config_costeo (id, metodo, parametro_json)
+        VALUES (1, :metodo, JSON_OBJECT('pct', :pct))
+        ON DUPLICATE KEY UPDATE metodo=VALUES(metodo), parametro_json=VALUES(parametro_json)
+    """), {"metodo": metodo, "pct": pct})
     db.commit()
     return {"ok": True}
 
@@ -66,5 +75,63 @@ def add_ind(payload: dict, db = Depends(db_dep)):
         INSERT INTO costo_indirecto (nombre, monto_mensual_crc, activo)
         VALUES (:nombre, :monto_mensual_crc, :activo)
     """), data)
+    db.commit()
+    return {"ok": True}
+
+# ---------------------------
+# Gastos operativos
+# ---------------------------
+@router.get("/gastos")
+def list_gastos(mes: str | None = None, db = Depends(db_dep)):
+    base = """
+      SELECT g.id, g.fecha, g.monto_crc, g.metodo_pago AS metodo, g.nota,
+             g.proveedor_id, pr.nombre AS proveedor_nombre,
+             g.categoria_id, cg.nombre AS categoria
+      FROM gasto g
+      LEFT JOIN proveedor pr ON pr.id = g.proveedor_id
+      LEFT JOIN categoria_gasto cg ON cg.id = g.categoria_id
+    """
+    params = {}
+    if mes:
+        base += " WHERE DATE_FORMAT(g.fecha,'%Y-%m') = :mes"
+        params["mes"] = mes
+    base += " ORDER BY g.fecha DESC, g.id DESC"
+    return db.execute(text(base), params).mappings().all()
+
+@router.post("/gastos")
+def add_gasto(payload: dict, db = Depends(db_dep)):
+    fecha = payload.get("fecha")
+    categoria = (payload.get("categoria") or "").strip()
+    categoria_id = payload.get("categoria_id")
+    proveedor_id = payload.get("proveedor_id")
+    metodo = payload.get("metodo") or payload.get("metodo_pago") or 'EFECTIVO'
+    nota = payload.get("nota")
+    try:
+        monto = float(payload.get("monto_crc") or 0)
+    except Exception:
+        monto = 0
+    if not fecha or monto <= 0:
+        return {"ok": False, "error": "fecha y monto > 0 requeridos"}
+    # Resolver categoria_id por nombre si hace falta
+    if not categoria_id and categoria:
+        row = db.execute(text("SELECT id FROM categoria_gasto WHERE nombre=:n"), {"n": categoria}).scalar()
+        if not row:
+            res = db.execute(text("INSERT INTO categoria_gasto (nombre) VALUES (:n)"), {"n": categoria})
+            db.commit()
+            categoria_id = res.lastrowid
+        else:
+            categoria_id = row
+    if not categoria_id:
+        # fallback: crear 'General'
+        row = db.execute(text("SELECT id FROM categoria_gasto WHERE nombre='General'" )).scalar()
+        if not row:
+            res = db.execute(text("INSERT INTO categoria_gasto (nombre) VALUES ('General')"))
+            db.commit(); categoria_id = res.lastrowid
+        else:
+            categoria_id = row
+    db.execute(text("""
+        INSERT INTO gasto (fecha, categoria_id, monto_crc, proveedor_id, metodo_pago, nota)
+        VALUES (:fecha, :categoria_id, :monto, :proveedor_id, :metodo, :nota)
+    """), {"fecha": fecha, "categoria_id": categoria_id, "monto": monto, "proveedor_id": proveedor_id, "metodo": metodo, "nota": nota})
     db.commit()
     return {"ok": True}

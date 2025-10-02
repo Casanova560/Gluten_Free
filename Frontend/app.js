@@ -127,6 +127,22 @@ async function loadCatalogs() {
 }
 loadCatalogs();
 
+function handleProductCreated(product, { openRecipe = false } = {}) {
+  if (!product || product.tipo !== 'PT' || !openRecipe) return;
+  try {
+    const payload = { id: product.id, nombre: product.nombre };
+    sessionStorage.setItem('pendingRecipeProduct', JSON.stringify(payload));
+    if (location.hash === '#/recetas') {
+      window.dispatchEvent(new CustomEvent('recipe-pending-ready'));
+    } else {
+      location.hash = '#/recetas';
+    }
+  } catch (err) {
+    console.warn('No se pudo preparar la receta pendiente', err);
+  }
+}
+
+
 // --- Components ---
 function Select({name, items, valueKey='id', labelKey='nombre', value='', placeholder='Seleccione…', required=false}) {
   const el = document.createElement('select');
@@ -165,7 +181,40 @@ function Table({columns, rows}) {
     const tr=document.createElement('tr');
     columns.forEach(c => {
       const td=document.createElement('td');
-      td.textContent = c.format ? c.format(r[c.key], r) : (r[c.key] ?? '');
+      const raw = c.key != null ? r[c.key] : undefined;
+      if (typeof c.render === 'function') {
+        const result = c.render(r, raw);
+        if (result == null) {
+          td.textContent = '';
+        } else if (result instanceof Node) {
+          td.appendChild(result);
+        } else if (Array.isArray(result)) {
+          result.forEach(node => {
+            if (node instanceof Node) {
+              td.appendChild(node);
+            } else if (node != null) {
+              td.append(document.createTextNode(String(node)));
+            }
+          });
+        } else {
+          td.textContent = String(result);
+        }
+      } else {
+        const formatted = c.format ? c.format(raw, r) : raw;
+        if (formatted instanceof Node) {
+          td.appendChild(formatted);
+        } else if (Array.isArray(formatted)) {
+          formatted.forEach(node => {
+            if (node instanceof Node) {
+              td.appendChild(node);
+            } else if (node != null) {
+              td.append(document.createTextNode(String(node)));
+            }
+          });
+        } else {
+          td.textContent = formatted == null ? '' : String(formatted);
+        }
+      }
       tr.appendChild(td);
     });
     tbody.appendChild(tr);
@@ -185,30 +234,28 @@ function navigate(hash){
 
 /* ============ Screens ============ */
 
-route('#/dashboard', async (root) => {
-  const data = await fetchJSON(api('/reportes/dashboard')).catch(()=>({ventas:[],compras:[],margen:[]}));
-  const kpi = document.createElement('div'); kpi.className='kpi-grid';
-  const suma = arr => arr.reduce((a,b)=>a+Number(b.total_crc||0),0);
-  const card = (title, value, foot='')=>{
-    const c=document.createElement('div'); c.className='card kpi';
-    c.innerHTML=`<h3>${title}</h3><div class="big">${fmt.money(value)}</div><small>${foot}</small>`;
-    return c;
+route('#/dashboard', (root) => {
+  const tryRender = () => {
+    if (typeof window.renderDashboard === 'function') {
+      window.renderDashboard(root);
+      return true;
+    }
+    return false;
   };
-  kpi.append(
-    card('Ventas 30d', suma(data.ventas), data.ventas[0]?.fecha ? `Último: ${fmt.date(data.ventas[0].fecha)}`:''),
-    card('Compras 30d', suma(data.compras), data.compras[0]?.fecha ? `Último: ${fmt.date(data.compras[0].fecha)}`:''),
-    card('Margen directo (últ. mes)', data.margen.length ? Number(data.margen[0].margen_directo_crc||0):0, data.margen[0]?.ym || '')
-  );
-  root.appendChild(kpi);
 
-  const grid = document.createElement('div'); grid.className='grid-2';
-  grid.append(
-    Table({columns:[{key:'fecha',label:'Fecha'},{key:'total_crc',label:'Ventas',format:fmt.money}], rows:data.ventas}),
-    Table({columns:[{key:'fecha',label:'Fecha'},{key:'total_crc',label:'Compras',format:fmt.money}], rows:data.compras})
-  );
-  root.appendChild(grid);
+  if (tryRender()) return;
+
+  root.innerHTML = '<div class="card"><h3>Dashboard</h3><p class="muted">Cargando dashboard...</p></div>';
+
+  const onReady = () => {
+    if (location.hash !== '#/dashboard') return;
+    if (tryRender()) {
+      window.removeEventListener('dashboard-ready', onReady);
+    }
+  };
+
+  window.addEventListener('dashboard-ready', onReady);
 });
-
 route('#/uom', (root) => {
   const form = document.createElement('form'); form.className='panel';
   form.append(
@@ -241,15 +288,86 @@ route('#/uom', (root) => {
 });
 
 route('#/productos', (root) => {
-  const header = Toolbar(
-    (()=>{ const b=document.createElement('button'); b.className='btn-primary'; b.textContent='Nuevo producto'; b.onclick=()=>openProductoModal(); return b; })(),
-    (()=>{ const i=Input({name:'q',placeholder:'Buscar…'}); i.addEventListener('input', debounce(()=>renderList(i.value),250)); return i;})()
-  );
+  let currentQuery = '';
+  const btnGroup = document.createElement('div');
+  btnGroup.className = 'btn-group';
+  const btnNewMP = document.createElement('button');
+  btnNewMP.className = 'btn-primary';
+  btnNewMP.textContent = 'Nueva MP';
+  btnNewMP.onclick = () => openProductoModal({ tipo: 'MP' });
+  const btnNewPT = document.createElement('button');
+  btnNewPT.className = 'btn';
+  btnNewPT.textContent = 'Nuevo PT (receta)';
+  btnNewPT.onclick = () => {
+    sessionStorage.removeItem('pendingProductModal');
+    sessionStorage.setItem('pendingRecipeModal', JSON.stringify({ createPT: true }));
+    if (location.hash === '#/recetas') {
+      window.dispatchEvent(new CustomEvent('recipe-pending-ready'));
+    } else {
+      location.hash = '#/recetas';
+    }
+  };
+  btnGroup.append(btnNewMP, btnNewPT);
+  const searchInput = Input({name:'q',placeholder:'Buscar...'});
+  searchInput.addEventListener('input', debounce(() => {
+    currentQuery = searchInput.value || '';
+    renderList(currentQuery);
+  }, 250));
+  const header = Toolbar(btnGroup, searchInput);
   root.appendChild(header);
 
-  function renderList(q=null){
-    const rows = Store.state.productos.filter(p => !q || (p.nombre?.toLowerCase().includes(q.toLowerCase()) || p.sku?.toLowerCase().includes(q.toLowerCase())));
+  async function refreshProductos() {
+    try {
+      const productos = await fetchJSON(api('/productos'));
+      if (Array.isArray(productos)) {
+        Store.set({ productos });
+      }
+    } catch (err) {
+      console.error(err);
+      Toast('No se pudieron refrescar los productos', 'error');
+    }
+  }
+
+  function renderList(q = '') {
+    currentQuery = q || '';
+    const rows = Store.state.productos.filter(p => {
+      if (!currentQuery) return true;
+      const needle = currentQuery.toLowerCase();
+      return (p.nombre || '').toLowerCase().includes(needle) || (p.sku || '').toLowerCase().includes(needle);
+    });
     root.querySelector('.table-wrap')?.remove();
+    const actionsCol = {
+      key: 'id',
+      label: 'Acciones',
+      render: (row) => {
+        const wrap = document.createElement('div');
+        wrap.className = 'table-actions';
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'icon-btn';
+        editBtn.textContent = 'Editar';
+        editBtn.title = 'Editar';
+        editBtn.onclick = () => openProductoModal(row, { mode: 'edit' });
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'icon-btn';
+        deleteBtn.textContent = 'Eliminar';
+        deleteBtn.title = 'Eliminar';
+        deleteBtn.onclick = async () => {
+          if (!confirm(`Eliminar producto ${row.nombre}?`)) return;
+          try {
+            await fetchJSON(api(`/productos/${row.id}`), { method: 'DELETE' });
+            Toast('Producto eliminado', 'success');
+            await refreshProductos();
+            renderList(currentQuery);
+          } catch (err) {
+            Toast(err?.message || 'No se pudo eliminar el producto', 'error');
+          }
+        };
+        wrap.append(editBtn, deleteBtn);
+        return wrap;
+      }
+    };
     root.appendChild(Table({
       columns:[
         {key:'sku',label:'Código'},
@@ -258,58 +376,92 @@ route('#/productos', (root) => {
         {key:'uom_base_id',label:'UOM'},
         {key:'precio_venta_crc',label:'Precio venta',format:fmt.money},
         {key:'costo_estandar_crc',label:'Costo estándar',format:fmt.money},
-        {key:'activo',label:'Activo'}
+        {key:'activo',label:'Activo'},
+        actionsCol
       ],
       rows
     }));
   }
   renderList();
 
-  function openProductoModal(prefill={tipo:'MP'}){
+  function openProductoModal(prefill = { tipo: 'MP' }, { mode = 'create' } = {}) {
+    const isEdit = mode === 'edit' && prefill && prefill.id;
     const form = document.createElement('form'); form.className='form-grid';
-    const sku = Field('Código interno (SKU)', Input({name:'sku', placeholder:'Opcional'}), {hint:'Si se deja vacío, se autogenera'});
-    const nom = Field('Nombre', Input({name:'nombre', required:true}));
+    const sku = Field('Código interno (SKU)', Input({name:'sku', placeholder:'Opcional', value: prefill.sku || ''}), {hint:'Si se deja vacío, se autogenera'});
+    const nom = Field('Nombre', Input({name:'nombre', required:true, value: prefill.nombre || ''}));
     const tipoSel = Select({name:'tipo',items:[{id:'MP',nombre:'Materia Prima'},{id:'PT',nombre:'Producto Terminado'}], valueKey:'id'});
-    tipoSel.required = true; tipoSel.value = prefill.tipo;
+    tipoSel.required = true; tipoSel.value = prefill.tipo || 'MP';
     const tipo = Field('Tipo', tipoSel);
-    const uom = Field('UOM base', Select({name:'uom_base_id', items:Store.state.uoms, valueKey:'id', labelKey:'nombre', required:true}));
-    const activo = Field('Activo', (()=>{ const s=Select({name:'activo', items:[{id:1,nombre:'Sí'},{id:0,nombre:'No'}], valueKey:'id'}); s.value=1; return s;})());
+    const uom = Field('UOM base', Select({name:'uom_base_id', items:Store.state.uoms, valueKey:'id', labelKey:'nombre', required:true, value:String(prefill.uom_base_id || '')}));
+    const activo = Field('Activo', (()=>{ const s=Select({name:'activo', items:[{id:1,nombre:'Si'},{id:0,nombre:'No'}], valueKey:'id'}); s.value = prefill.activo != null ? String(prefill.activo) : '1'; return s;})());
 
-    // NUEVO: campos PT
-    const precioPT = Field('Precio de venta (PT)', Input({name:'precio_venta_crc', type:'number', step:'0.01', value:''}), {hint:'Se usa como precio por defecto en ventas'});
-    const costoStdPT = Field('Costo estándar (PT)', Input({name:'costo_estandar_crc', type:'number', step:'0.01', value:''}), {hint:'Puede actualizarse desde costeo/producción'});
-    precioPT.dataset.pt = '1'; costoStdPT.dataset.pt = '1';
+    const costField = Field('Costo estándar (CRC)', Input({name:'costo_estandar_crc', type:'number', step:'0.01', value: prefill.costo_estandar_crc != null ? String(prefill.costo_estandar_crc) : ''}), {hint:'Costo unitario base usado para inventario y producción'});
+    const priceField = Field('Precio de venta (PT)', Input({name:'precio_venta_crc', type:'number', step:'0.01', value: prefill.precio_venta_crc != null ? String(prefill.precio_venta_crc) : ''}), {hint:'Se usa como precio por defecto en ventas'});
 
-    // Por defecto solo mostrar si PT
-    function togglePT() {
+    function toggleTipoProducto() {
       const isPT = tipoSel.value === 'PT';
-      [precioPT, costoStdPT].forEach(el => el.style.display = isPT ? '' : 'none');
+      priceField.style.display = isPT ? '' : 'none';
     }
-    tipoSel.addEventListener('change', togglePT);
-    togglePT();
+    tipoSel.addEventListener('change', toggleTipoProducto);
+    toggleTipoProducto();
 
-    form.append(sku,nom,tipo,uom,precioPT,costoStdPT,activo);
+    form.append(sku,nom,tipo,uom,costField,priceField,activo);
 
     Modal.open({
-      title:'Nuevo producto',
+      title: isEdit ? 'Editar producto' : 'Nuevo producto',
+      okText: isEdit ? 'Guardar cambios' : 'Crear producto',
       content: form,
       onOk: async () => {
         const payload = Object.fromEntries(new FormData(form).entries());
         if (!payload.sku) payload.sku = `${slug(payload.nombre).slice(0,12)}-${Math.random().toString(36).slice(2,6)}`.toUpperCase();
         payload.uom_base_id = Number(payload.uom_base_id);
-        if (payload.precio_venta_crc) payload.precio_venta_crc = Number(payload.precio_venta_crc);
-        if (payload.costo_estandar_crc) payload.costo_estandar_crc = Number(payload.costo_estandar_crc);
+        if (payload.precio_venta_crc !== undefined && payload.precio_venta_crc !== '') payload.precio_venta_crc = Number(payload.precio_venta_crc);
+        if (payload.costo_estandar_crc !== undefined && payload.costo_estandar_crc !== '') payload.costo_estandar_crc = Number(payload.costo_estandar_crc);
+        if (payload.activo != null) payload.activo = Number(payload.activo);
         try {
-          await fetchJSON(api('/productos'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-          const productos = await fetchJSON(api('/productos')); Store.set({productos});
-          Toast('Producto creado','success');
-        } catch(e){ Toast(e.message,'error'); return false; }
+          if (isEdit) {
+            await fetchJSON(api(`/productos/${prefill.id}`), {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+            Toast('Producto actualizado','success');
+          } else {
+            const created = await fetchJSON(api('/productos'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+            Toast('Producto creado','success');
+            handleProductCreated(created, { openRecipe: true });
+          }
+          await refreshProductos();
+          renderList(currentQuery);
+        } catch(e){ Toast(e.message || 'Error al guardar producto','error'); return false; }
       }
     });
   }
-});
 
+  function handlePendingProductModal() {
+    let pending = null;
+    try {
+      const raw = sessionStorage.getItem('pendingProductModal');
+      if (raw) pending = JSON.parse(raw);
+    } catch (err) {
+      console.warn('No se pudo leer el producto pendiente', err);
+    }
+    if (!pending) return;
+    sessionStorage.removeItem('pendingProductModal');
+    openProductoModal(pending);
+  }
+
+  if (window.__pendingProductModalHandler) {
+    window.removeEventListener('product-modal-pending', window.__pendingProductModalHandler);
+  }
+  window.__pendingProductModalHandler = handlePendingProductModal;
+  window.addEventListener('product-modal-pending', handlePendingProductModal);
+  handlePendingProductModal();
+});
 route('#/contactos', (root) => {
+  const meta = {
+    clientes: { plural: 'clientes', singular: 'cliente', title: 'Clientes' },
+    proveedores: { plural: 'proveedores', singular: 'proveedor', title: 'Proveedores' },
+    empleados: { plural: 'empleados', singular: 'empleado', title: 'Empleados' }
+  };
+  let currentKind = 'clientes';
+
   const tabs = document.createElement('div'); tabs.className='tabs';
   tabs.innerHTML = `
     <button class="active" data-t="clientes">Clientes</button>
@@ -320,57 +472,144 @@ route('#/contactos', (root) => {
   root.appendChild(tabs);
 
   const list = document.createElement('div'); root.appendChild(list);
-  function render(kind='clientes'){
+
+  async function refresh(kind) {
+    const base = meta[kind].plural;
+    try {
+      const data = await fetchJSON(api(`/contactos/${base}`));
+      Store.set({ [base]: data });
+      render(kind);
+    } catch (err) {
+      console.error(err);
+      Toast('No se pudieron cargar los contactos', 'error');
+    }
+  }
+
+  function render(kind = currentKind) {
+    currentKind = kind;
     tabs.querySelectorAll('button[data-t]').forEach(b=>b.classList.toggle('active', b.dataset.t===kind));
-    const rows = Store.state[kind];
+    const rows = Store.state[kind] || [];
     list.innerHTML='';
-    list.appendChild(Table({columns:[
+    const cols = [
       {key:'nombre',label:'Nombre'},
       {key:'num_doc',label:'Documento'},
       {key:'telefono',label:'Teléfono'},
       {key:'email',label:'Email'},
       {key:'direccion',label:'Dirección'}
-    ], rows}));
+    ];
+    if (kind === 'empleados') {
+      cols.push({key:'tarifa_hora_crc',label:'Tarifa hora',format:fmt.money});
+    }
+    cols.push({
+      key:'id',
+      label:'Acciones',
+      render:(row)=>{
+        const wrap = document.createElement('div'); wrap.className='table-actions';
+        const editBtn = document.createElement('button');
+        editBtn.type='button'; editBtn.className='icon-btn';
+        editBtn.textContent='Editar'; editBtn.title='Editar';
+        editBtn.onclick = () => openContactModal({ mode:'edit', kind, record: row });
+        const delBtn = document.createElement('button');
+        delBtn.type='button'; delBtn.className='icon-btn';
+        delBtn.textContent='Eliminar'; delBtn.title='Eliminar';
+        delBtn.onclick = async () => {
+          if (!confirm(`Eliminar ${meta[kind].singular} ${row.nombre}?`)) return;
+          try {
+            await fetchJSON(api(`/contactos/${meta[kind].plural}/${row.id}`), { method:'DELETE' });
+            Toast('Registro eliminado','success');
+            await refresh(kind);
+          } catch (err) {
+            Toast(err?.message || 'No se pudo eliminar', 'error');
+          }
+        };
+        wrap.append(editBtn, delBtn);
+        return wrap;
+      }
+    });
+    list.appendChild(Table({columns:cols, rows}));
   }
   render('clientes');
 
   tabs.addEventListener('click', (e)=>{
-    if (e.target.matches('[data-t]')) render(e.target.dataset.t);
-    if (e.target.id==='btnNuevoContacto') openModalNew();
+    if (e.target.matches('[data-t]')) {
+      render(e.target.dataset.t);
+    }
+    if (e.target.id==='btnNuevoContacto') openContactModal({ mode:'create', kind:currentKind });
   });
 
-  function openModalNew(){
+  function openContactModal({ mode = 'create', kind = 'clientes', record = null } = {}) {
+    const isEdit = mode === 'edit' && record;
+    const singular = meta[kind].singular;
     const form=document.createElement('form'); form.className='form-grid';
-    const tipo = Field('Tipo', (()=>{ const s=Select({name:'tipo',items:[{id:'cliente',nombre:'Cliente'},{id:'proveedor',nombre:'Proveedor'},{id:'empleado',nombre:'Empleado'}], valueKey:'id'}); s.required=true; return s; })());
-    const nombre= Field('Nombre', Input({name:'nombre', required:true}));
-    const numdoc= Field('Documento', Input({name:'num_doc'}));
-    const tel   = Field('Teléfono', Input({name:'telefono'}));
-    const email = Field('Email', Input({name:'email', type:'email'}));
-    const dir   = Field('Dirección', Input({name:'direccion'}));
-    form.append(tipo,nombre,numdoc,tel,email,dir);
+    let tipoSel = null;
+    if (!isEdit) {
+      tipoSel = Select({name:'tipo',items:[
+        {id:'clientes',nombre:'Cliente'},
+        {id:'proveedores',nombre:'Proveedor'},
+        {id:'empleados',nombre:'Empleado'}
+      ], valueKey:'id'});
+      tipoSel.value = kind;
+      form.append(Field('Tipo', tipoSel));
+    }
+    const nombre= Field('Nombre', Input({name:'nombre', required:true, value: record?.nombre || ''}));
+    const numdoc= Field('Documento', Input({name:'num_doc', value: record?.num_doc || ''}));
+    const tel   = Field('Teléfono', Input({name:'telefono', value: record?.telefono || ''}));
+    const email = Field('Email', Input({name:'email', value: record?.email || ''}));
+    const dir   = Field('Dirección', Input({name:'direccion', value: record?.direccion || ''}));
+    const activo = Field('Activo', (()=>{ const s=Select({name:'activo', items:[{id:1,nombre:'Si'},{id:0,nombre:'No'}], valueKey:'id'}); s.value = record?.activo != null ? String(record.activo) : '1'; return s;})());
+    form.append(nombre,numdoc,tel,email,dir,activo);
+
+    let tarifaField = null;
+    if ((isEdit && kind === 'empleados') || (!isEdit && (tipoSel?.value === 'empleados'))) {
+      tarifaField = Field('Tarifa x hora (CRC)', Input({name:'tarifa_hora_crc', type:'number', step:'0.01', value: record?.tarifa_hora_crc != null ? String(record.tarifa_hora_crc) : ''}));
+      form.append(tarifaField);
+    }
+
+    if (tipoSel) {
+      tipoSel.addEventListener('change', () => {
+        if (tipoSel.value === 'empleados') {
+          if (!tarifaField) {
+            tarifaField = Field('Tarifa x hora (CRC)', Input({name:'tarifa_hora_crc', type:'number', step:'0.01', required:true}));
+            form.append(tarifaField);
+          }
+        } else if (tarifaField) {
+          tarifaField.remove();
+          tarifaField = null;
+        }
+      });
+    }
 
     Modal.open({
-      title:'Nuevo contacto',
-      content:form,
-      onOk: async ()=>{
-        const payload = Object.fromEntries(new FormData(form).entries());
-        try{
-          if (payload.tipo==='cliente') await fetchJSON(api('/contactos/clientes'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-          else if (payload.tipo==='proveedor') await fetchJSON(api('/contactos/proveedores'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-          else await fetchJSON(api('/contactos/empleados'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-          const [clientes, proveedores, empleados] = await Promise.all([
-            fetchJSON(api('/contactos/clientes')),
-            fetchJSON(api('/contactos/proveedores')),
-            fetchJSON(api('/contactos/empleados')),
-          ]);
-          Store.set({clientes, proveedores, empleados});
-          Toast('Contacto creado','success');
-        }catch(e){ Toast(e.message,'error'); return false; }
+      title: isEdit ? `Editar ${singular}` : 'Nuevo contacto',
+      okText: 'Guardar',
+      content: form,
+      onOk: async () => {
+        const data = Object.fromEntries(new FormData(form).entries());
+        const targetKind = isEdit ? kind : (data.tipo || kind);
+        if (!data.nombre || !data.nombre.trim()) {
+          Toast('Nombre requerido','error');
+          return false;
+        }
+        if (data.activo != null) data.activo = Number(data.activo);
+        if (data.tarifa_hora_crc !== undefined && data.tarifa_hora_crc !== '') data.tarifa_hora_crc = Number(data.tarifa_hora_crc);
+        try {
+          if (isEdit) {
+            await fetchJSON(api(`/contactos/${meta[targetKind].plural}/${record.id}`), {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data)});
+            Toast('Contacto actualizado','success');
+          } else {
+            await fetchJSON(api(`/contactos/${meta[targetKind].plural}`), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data)});
+            Toast('Contacto creado','success');
+          }
+          await refresh(targetKind);
+          if (targetKind !== currentKind) render(targetKind);
+        } catch (err) {
+          Toast(err?.message || 'No se pudo guardar el contacto','error');
+          return false;
+        }
       }
     });
   }
 });
-
 route('#/ventas', (root) => {
   const form = document.createElement('form'); form.className='panel form-grid';
   const fecha = Field('Fecha', Input({name:'fecha', type:'date', required:true, value: today()}));
@@ -410,7 +649,7 @@ route('#/ventas', (root) => {
     const margen = Field('Margen %', Input({name:'margen_pct', type:'number', step:'0.01', value:'40'}));
 
     const desc = Field('Desc', Input({name:'descuento_crc', type:'number', step:'0.01', value:'0'}));
-    const del = document.createElement('button'); del.type='button'; del.className='icon-btn'; del.textContent='🗑'; del.onclick=()=>{ row.remove(); calc(); };
+    const del = document.createElement('button'); del.type='button'; del.className='icon-btn'; del.textContent='🗑'; del.title='Eliminar'; del.setAttribute('aria-label','Eliminar'); del.onclick=()=>{ row.remove(); calc(); };
 
     row.append(prodWrap, uom, cant, precio, costoEst, margen, desc, del);
 
@@ -495,15 +734,26 @@ route('#/ventas', (root) => {
 
   function openProductoInline(tipo, selectEl){
     const form = document.createElement('form'); form.className='form-grid';
+    const tipoSelEl = Select({name:'tipo', items:[{id:'MP',nombre:'Materia Prima'},{id:'PT',nombre:'Producto Terminado'}], valueKey:'id', required:true});
+    tipoSelEl.value = tipo; tipoSelEl.disabled = true; // En ventas, forzamos PT
+    const costField = Field('Costo estándar (CRC)', Input({name:'costo_estandar_crc', type:'number', step:'0.01', required:true}));
+    const priceField = Field('Precio de venta (PT)', Input({name:'precio_venta_crc', type:'number', step:'0.01'}));
     form.append(
       Field('Código interno (SKU)', Input({name:'sku', placeholder:'Opcional'})),
       Field('Nombre', Input({name:'nombre', required:true})),
-      Field('Tipo', (()=>{ const s=Select({name:'tipo', items:[{id:'MP',nombre:'Materia Prima'},{id:'PT',nombre:'Producto Terminado'}], valueKey:'id', required:true}); s.value=tipo; return s;})()),
+      Field('Tipo', tipoSelEl),
       Field('UOM base', Select({name:'uom_base_id', items:Store.state.uoms, valueKey:'id', labelKey:'nombre', required:true})),
-      // NUEVO: precio/costo si PT
-      Field('Precio de venta (PT)', Input({name:'precio_venta_crc', type:'number', step:'0.01'})),
-      Field('Costo estándar (PT)', Input({name:'costo_estandar_crc', type:'number', step:'0.01'}))
+      costField,
+      priceField
     );
+
+    function toggleInlineTipo() {
+      const isPT = tipoSelEl.value === 'PT';
+      priceField.style.display = isPT ? '' : 'none';
+    }
+    tipoSelEl.addEventListener('change', toggleInlineTipo);
+    toggleInlineTipo();
+
     Modal.open({
       title:'Nuevo producto',
       content: form,
@@ -511,18 +761,29 @@ route('#/ventas', (root) => {
         const payload = Object.fromEntries(new FormData(form).entries());
         if (!payload.sku) payload.sku = `${slug(payload.nombre).slice(0,12)}-${Math.random().toString(36).slice(2,6)}`.toUpperCase();
         payload.uom_base_id = Number(payload.uom_base_id);
-        if (payload.precio_venta_crc) payload.precio_venta_crc = Number(payload.precio_venta_crc);
-        if (payload.costo_estandar_crc) payload.costo_estandar_crc = Number(payload.costo_estandar_crc);
+        if (payload.precio_venta_crc !== undefined && payload.precio_venta_crc !== '') payload.precio_venta_crc = Number(payload.precio_venta_crc);
+        if (payload.costo_estandar_crc !== undefined && payload.costo_estandar_crc !== '') payload.costo_estandar_crc = Number(payload.costo_estandar_crc);
         try{
-          await fetchJSON(api('/productos'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+          const created = await fetchJSON(api('/productos'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
           const productos = await fetchJSON(api('/productos')); Store.set({productos});
           if (selectEl) {
             selectEl.innerHTML='';
-            const ph = document.createElement('option'); ph.value=''; ph.textContent='Seleccione…'; selectEl.appendChild(ph);
+            const ph = document.createElement('option'); ph.value=''; ph.textContent='Seleccione.'; selectEl.appendChild(ph);
             Store.state.productos.filter(p=>p.tipo==='PT').forEach(p=>selectEl.appendChild(new Option(p.nombre, p.id)));
-            selectEl.value = Store.state.productos.find(p=>p.nombre===payload.nombre)?.id || '';
+            if (created?.id) {
+              selectEl.value = String(created.id);
+            } else {
+              const found = Store.state.productos.find(p=>p.nombre===payload.nombre);
+              selectEl.value = found ? String(found.id) : '';
+            }
+            selectEl.dispatchEvent(new Event('change'));
           }
           Toast('Producto creado','success');
+          if (created?.tipo === 'PT') {
+            if (confirm('Producto terminado creado. Desea registrar la receta ahora?')) {
+              handleProductCreated(created, { openRecipe: true });
+            }
+          }
         }catch(e){ Toast(e.message,'error'); return false; }
       }
     });
@@ -565,7 +826,7 @@ route('#/compras', (root) => {
     const costoInput = Input({name:'costo_unitario_crc', type:'number', step:'0.01', value:'0', required:true});
     const costo= Field('Costo', costoInput);
     const desc = Field('Desc', Input({name:'descuento_crc', type:'number', step:'0.01', value:'0'}));
-    const del  = document.createElement('button'); del.type='button'; del.className='icon-btn'; del.textContent='🗑'; del.onclick=()=>{ row.remove(); calc(); };
+    const del  = document.createElement('button'); del.type='button'; del.className='icon-btn'; del.textContent='🗑'; del.title='Eliminar'; del.setAttribute('aria-label','Eliminar'); del.onclick=()=>{ row.remove(); calc(); };
     row.append(prodWrap, uom, cant, costo, desc, del);
 
     // Bloquear UOM a base y proponer costo desde /costos/mp
@@ -626,15 +887,26 @@ route('#/compras', (root) => {
 
   function quickProduct(tipo, selectEl){
     const form = document.createElement('form'); form.className='form-grid';
+    const tipoSelEl = Select({name:'tipo', items:[{id:'MP',nombre:'Materia Prima'},{id:'PT',nombre:'Producto Terminado'}], valueKey:'id', required:true});
+    tipoSelEl.value = tipo; tipoSelEl.disabled = true; // En compras, forzamos MP
+    const costField = Field('Costo estándar (CRC)', Input({name:'costo_estandar_crc', type:'number', step:'0.01', required:true}));
+    const priceField = Field('Precio de venta (PT)', Input({name:'precio_venta_crc', type:'number', step:'0.01'}));
     form.append(
       Field('Código interno (SKU)', Input({name:'sku', placeholder:'Opcional'})),
       Field('Nombre', Input({name:'nombre', required:true})),
-      Field('Tipo', (()=>{ const s=Select({name:'tipo', items:[{id:'MP',nombre:'Materia Prima'},{id:'PT',nombre:'Producto Terminado'}], valueKey:'id', required:true}); s.value=tipo; return s;})()),
+      Field('Tipo', tipoSelEl),
       Field('UOM base', Select({name:'uom_base_id', items:Store.state.uoms, valueKey:'id', labelKey:'nombre', required:true})),
-      // NUEVO: precio/costo si PT
-      Field('Precio de venta (PT)', Input({name:'precio_venta_crc', type:'number', step:'0.01'})),
-      Field('Costo estándar (PT)', Input({name:'costo_estandar_crc', type:'number', step:'0.01'}))
+      costField,
+      priceField
     );
+
+    function toggleQuickTipo() {
+      const isPT = tipoSelEl.value === 'PT';
+      priceField.style.display = isPT ? '' : 'none';
+    }
+    tipoSelEl.addEventListener('change', toggleQuickTipo);
+    toggleQuickTipo();
+
     Modal.open({
       title:'Nuevo producto',
       content: form,
@@ -642,16 +914,21 @@ route('#/compras', (root) => {
         const payload = Object.fromEntries(new FormData(form).entries());
         if (!payload.sku) payload.sku = `${slug(payload.nombre).slice(0,12)}-${Math.random().toString(36).slice(2,6)}`.toUpperCase();
         payload.uom_base_id = Number(payload.uom_base_id);
-        if (payload.precio_venta_crc) payload.precio_venta_crc = Number(payload.precio_venta_crc);
-        if (payload.costo_estandar_crc) payload.costo_estandar_crc = Number(payload.costo_estandar_crc);
+        if (payload.precio_venta_crc !== undefined && payload.precio_venta_crc !== '') payload.precio_venta_crc = Number(payload.precio_venta_crc);
+        if (payload.costo_estandar_crc !== undefined && payload.costo_estandar_crc !== '') payload.costo_estandar_crc = Number(payload.costo_estandar_crc);
         try{
-          await fetchJSON(api('/productos'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+          const created = await fetchJSON(api('/productos'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
           const productos = await fetchJSON(api('/productos')); Store.set({productos});
           if (selectEl) {
             selectEl.innerHTML='';
-            const ph = document.createElement('option'); ph.value=''; ph.textContent='Seleccione…'; selectEl.appendChild(ph);
+            const ph = document.createElement('option'); ph.value=''; ph.textContent='Seleccione.'; selectEl.appendChild(ph);
             Store.state.productos.filter(p=>p.tipo==='MP').forEach(p=>selectEl.appendChild(new Option(p.nombre, p.id)));
-            selectEl.value = Store.state.productos.find(p=>p.nombre===payload.nombre)?.id || '';
+            if (created?.id) {
+              selectEl.value = String(created.id);
+            } else {
+              const found = Store.state.productos.find(p=>p.nombre===payload.nombre);
+              selectEl.value = found ? String(found.id) : '';
+            }
             selectEl.dispatchEvent(new Event('change'));
           }
           Toast('Producto creado','success');
@@ -668,16 +945,67 @@ route('#/recetas', (root)=>{
   );
   root.appendChild(header);
 
+  let recetasCache = [];
+  let currentRecipeQuery = '';
+  const getProductoNombre = (id) => {
+    if (!id) return '';
+    const found = Store.state.productos.find(p => Number(p.id) === Number(id));
+    return found ? found.nombre : `#${id}`;
+  };
+
   async function renderList(q=null){
-    const recetas = await fetchJSON(api('/recetas')).catch(()=>[]);
-    const rows = recetas.filter(r => !q || (r.nombre?.toLowerCase().includes(q.toLowerCase())));
+    try {
+      recetasCache = await fetchJSON(api('/recetas'));
+    } catch (_) {
+      recetasCache = [];
+    }
+    currentRecipeQuery = q || '';
+    const term = currentRecipeQuery ? currentRecipeQuery.toLowerCase() : '';
+    const rows = recetasCache.filter(r => !term || (r.nombre || '').toLowerCase().includes(term));
     root.querySelector('.table-wrap')?.remove();
-    root.appendChild(Table({columns:[
+    const columns = [
       {key:'nombre',label:'Nombre'},
-      {key:'producto_salida_id',label:'Prod. salida'},
+      {key:'producto_salida_id',label:'Prod. salida',format: (value) => getProductoNombre(value)},
       {key:'uom_salida_id',label:'UOM salida'},
-      {key:'activo',label:'Activo'}
-    ], rows}));
+      {key:'activo',label:'Activo'},
+      {
+        key:'id',
+        label:'Acciones',
+        render:(row)=>{
+          const wrap=document.createElement('div'); wrap.className='table-actions';
+          const editBtn=document.createElement('button'); editBtn.type='button'; editBtn.className='icon-btn'; editBtn.textContent='Editar'; editBtn.title='Editar';
+          editBtn.onclick=()=>handleEditReceta(row.id);
+          const delBtn=document.createElement('button'); delBtn.type='button'; delBtn.className='icon-btn'; delBtn.textContent='Eliminar'; delBtn.title='Eliminar';
+          delBtn.onclick=()=>handleDeleteReceta(row);
+          wrap.append(editBtn, delBtn);
+          return wrap;
+        }
+      }
+    ];
+    root.appendChild(Table({columns, rows}));
+  }
+
+  async function handleEditReceta(id) {
+    try {
+      const data = await fetchJSON(api(`/recetas/${id}`));
+      openRecetaModal(data, { mode: 'edit' });
+    } catch (err) {
+      console.error(err);
+      Toast('No se pudo cargar la receta', 'error');
+    }
+  }
+
+  async function handleDeleteReceta(row) {
+    if (!row || !row.id) return;
+    if (!confirm(`Eliminar receta ${row.nombre || '#' + row.id}?`)) return;
+    try {
+      await fetchJSON(api(`/recetas/${row.id}`), { method: 'DELETE' });
+      Toast('Receta eliminada', 'success');
+      await renderList(currentRecipeQuery);
+    } catch (err) {
+      console.error(err);
+      Toast(err?.message || 'No se pudo eliminar la receta', 'error');
+    }
   }
   renderList();
 
@@ -812,18 +1140,46 @@ route('#/recetas', (root)=>{
     }catch(e){ Toast(e.message,'error'); }
   };
 
-  function openRecetaModal(){
+  function openRecetaModal(prefill = {}, options = {}){
+    const mode = options.mode || (prefill?.id ? 'edit' : 'create');
+    const isEdit = mode === 'edit';
+    const recetaId = isEdit ? prefill.id : null;
+
     const form = document.createElement('form'); form.className='form-grid';
-    const nombre = Field('Nombre', Input({name:'nombre', required:true}));
-    const prodOut= Field('Producto salida (PT)', Select({name:'producto_salida_id', items:Store.state.productos.filter(p=>p.tipo==='PT')}));
-    const addPT = document.createElement('button'); addPT.type='button'; addPT.className='icon-btn'; addPT.textContent='＋'; addPT.title='Nuevo PT'; addPT.onclick=()=>quickProduct('PT', prodOut.querySelector('select'));
+    const nombre = Field('Nombre', Input({name:'nombre', required:true, value: prefill.nombre || ''}));
+    const prodOut= Field('Producto salida (PT)', Select({name:'producto_salida_id', items:Store.state.productos.filter(p=>p.tipo==='PT'), value: prefill.producto_salida_id ? String(prefill.producto_salida_id) : ''}));
+    const addPT = document.createElement('button'); addPT.type='button'; addPT.className='icon-btn'; addPT.textContent='+'; addPT.title='Nuevo PT'; addPT.onclick=()=>quickProduct('PT', prodOut.querySelector('select'));
     prodOut.appendChild(addPT);
-    const uomOut = Field('UOM salida', Select({name:'uom_salida_id', items:Store.state.uoms}));
-    const manoObra = Field('Mano de obra (CRC)', Input({name:'mano_obra_crc', type:'number', step:'0.01', value:'0'}));
-    const mermaEst = Field('Merma estimada (CRC)', Input({name:'merma_crc', type:'number', step:'0.01', value:'0'}));
-    const pctInd = Field('% Indirectos', Input({name:'indirectos_pct', type:'number', step:'0.01', value:''}), {hint:'Si vacío, se aplicará el % global'});
-    const nota   = Field('Notas', Input({name:'nota'}));
+    const uomOut = Field('UOM salida', Select({name:'uom_salida_id', items:Store.state.uoms, value: prefill.uom_salida_id ? String(prefill.uom_salida_id) : ''}));
+    const manoObra = Field('Mano de obra (CRC)', Input({name:'mano_obra_crc', type:'number', step:'0.01', value: prefill.mano_obra_crc != null ? String(prefill.mano_obra_crc) : '0'}));
+    const mermaEst = Field('Merma estimada (CRC)', Input({name:'merma_crc', type:'number', step:'0.01', value: prefill.merma_crc != null ? String(prefill.merma_crc) : '0'}));
+    const pctInd = Field('% Indirectos', Input({name:'indirectos_pct', type:'number', step:'0.01', value: prefill.indirectos_pct != null ? String(prefill.indirectos_pct) : ''}), {hint:'Si vacio, se aplicara el % global'});
+    const nota   = Field('Notas', Input({name:'nota', value: prefill.nota || ''}));
     form.append(nombre, prodOut, uomOut, manoObra, mermaEst, pctInd, nota);
+
+    const nombreInput = nombre.querySelector('input');
+    const prodOutSelect = prodOut.querySelector('select');
+    const uomOutSelect = uomOut.querySelector('select');
+    const productPrefill = prefill?.productoId ? Store.state.productos.find(p => Number(p.id) === Number(prefill.productoId)) : null;
+    if (prefill?.productoId) {
+      prodOutSelect.value = String(prefill.productoId);
+      prodOutSelect.disabled = true;
+      addPT.disabled = true;
+    }
+    if (prefill?.producto_salida_id) {
+      prodOutSelect.value = String(prefill.producto_salida_id);
+    }
+    if (prefill?.uom_salida_id) {
+      uomOutSelect.value = String(prefill.uom_salida_id);
+    } else if (productPrefill?.uom_base_id) {
+      uomOutSelect.value = String(productPrefill.uom_base_id);
+    }
+    if (!nombreInput.value && (prefill?.productoNombre || productPrefill?.nombre)) {
+      nombreInput.value = prefill?.productoNombre || productPrefill?.nombre || '';
+    }
+    if (prefill?.createPT) {
+      setTimeout(() => addPT.click(), 120);
+    }
 
     const ingredientes = document.createElement('div'); ingredientes.className='subpanel';
     ingredientes.innerHTML = '<h4>Ingredientes (MP) con costos</h4>';
@@ -833,13 +1189,13 @@ route('#/recetas', (root)=>{
 
     const totBox = document.createElement('div'); totBox.className='kpi-grid';
     totBox.innerHTML = `
-      <div class="card kpi"><h3>Materiales</h3><div class="big" id="k_mat">₡0,00</div></div>
-      <div class="card kpi"><h3>Otros</h3><div class="big" id="k_otr">₡0,00</div></div>
-      <div class="card kpi"><h3>Total ingredientes</h3><div class="big" id="k_totIng">₡0,00</div></div>
-      <div class="card kpi"><h3>Indirectos</h3><div class="big" id="k_ind">₡0,00</div></div>
-      <div class="card kpi"><h3>Mano de obra</h3><div class="big" id="k_mo">₡0,00</div></div>
-      <div class="card kpi"><h3>Merma</h3><div class="big" id="k_mer">₡0,00</div></div>
-      <div class="card kpi"><h3>Total receta</h3><div class="big" id="k_totRec">₡0,00</div></div>
+      <div class="card kpi"><h3>Materiales</h3><div class="big" id="k_mat">?0,00</div></div>
+      <div class="card kpi"><h3>Otros</h3><div class="big" id="k_otr">?0,00</div></div>
+      <div class="card kpi"><h3>Total ingredientes</h3><div class="big" id="k_totIng">?0,00</div></div>
+      <div class="card kpi"><h3>Indirectos</h3><div class="big" id="k_ind">?0,00</div></div>
+      <div class="card kpi"><h3>Mano de obra</h3><div class="big" id="k_mo">?0,00</div></div>
+      <div class="card kpi"><h3>Merma</h3><div class="big" id="k_mer">?0,00</div></div>
+      <div class="card kpi"><h3>Total receta</h3><div class="big" id="k_totRec">?0,00</div></div>
     `;
     ingredientes.appendChild(totBox);
 
@@ -851,59 +1207,42 @@ route('#/recetas', (root)=>{
 
     const wrap = document.createElement('div'); wrap.append(form, ingredientes, salidas);
 
-    const ingRow=()=> {
+    const ingRow = (pref = null) => {
       const row=document.createElement('div'); row.className='line';
-      const mpSel = Select({name:'producto_id', items:Store.state.productos.filter(p=>p.tipo==='MP'), required:true});
-      const mpFld = Field('MP', mpSel);
-      const uomSel = Select({name:'uom_id', items:Store.state.uoms, required:true});
-      const uomFld = Field('UOM', uomSel);
-      const qty = Field('Cantidad', Input({name:'cantidad', type:'number', step:'0.000001', required:true, value:'1'}));
-      const costoU = Field('Costo u.', Input({name:'costo_unitario_crc', type:'number', step:'0.0001', value:'0'}));
-      const otros  = Field('Otros costos', Input({name:'otros_costos_crc', type:'number', step:'0.01', value:'0'}));
-      const subTot = Field('Subtotal', Input({name:'subtotal', type:'number', step:'0.01', value:'0'}));
-      subTot.querySelector('input').readOnly = true;
-
-      row.append(mpFld, uomFld, qty, costoU, otros, subTot);
-
-      // bloquear UOM a la UOM base del producto + proponer costo
-      row.addEventListener('change', async (e)=>{
+      const mpSel = Select({name:'producto_id', items:Store.state.productos.filter(p=>p.tipo==='MP'), required:true, value: pref?.producto_id ? String(pref.producto_id) : ''});
+      const uomSel = Select({name:'uom_id', items:Store.state.uoms, required:true, value: pref?.uom_id ? String(pref.uom_id) : ''});
+      const cant = Field('Cantidad', Input({name:'cantidad', type:'number', step:'0.000001', required:true, value: pref?.cantidad != null ? String(pref.cantidad) : '1'}));
+      const costo = Field('Costo unitario (CRC)', Input({name:'costo_unitario_crc', type:'number', step:'0.000001', value: pref?.costo_unitario_crc != null ? String(pref.costo_unitario_crc) : '0'}));
+      const otros = Field('Otros costos (CRC)', Input({name:'otros_costos_crc', type:'number', step:'0.000001', value: pref?.otros_costos_crc != null ? String(pref.otros_costos_crc) : '0'}));
+      const del = document.createElement('button'); del.type='button'; del.className='icon-btn'; del.textContent='Eliminar'; del.onclick=()=>{ row.remove(); recalcTotals(); };
+      row.append(Field('MP', mpSel), Field('UOM', uomSel), cant, costo, otros, del);
+      row.addEventListener('change', (e)=>{
         if (e.target.name === 'producto_id') {
           const pid = Number(e.target.value||0);
           const prod = Store.state.productos.find(p=>p.id===pid);
           if (prod) { uomSel.value = String(prod.uom_base_id); uomSel.disabled = true; }
           else { uomSel.disabled = false; }
-          if (pid) {
-            const map = await getCostosMP([pid]);
-            const c = Number(map[pid] || 0);
-            if (c>0 && !Number(costoU.querySelector('input').value)) {
-              costoU.querySelector('input').value = String(c);
-            }
-          }
         }
-        recalcRow(); recalcTotals();
+        recalcRow();
       });
-      row.addEventListener('input', ()=>{ recalcRow(); recalcTotals(); });
-
+      row.addEventListener('input', recalcRow);
       function recalcRow(){
-        const q = Number(qty.querySelector('input').value||0);
-        const cu = Number(costoU.querySelector('input').value||0);
-        const ot = Number(otros.querySelector('input').value||0);
-        const subtotal = (q*cu) + ot;
-        subTot.querySelector('input').value = subtotal.toFixed(2);
+        recalcTotals();
       }
-
+      if (pref?.producto_id) {
+        mpSel.value = String(pref.producto_id);
+        mpSel.dispatchEvent(new Event('change'));
+      }
       return row;
     };
 
-    const outRow=()=> {
+    const outRow = (pref = null) => {
       const row=document.createElement('div'); row.className='line';
-      const ptSel = Select({name:'producto_id', items:Store.state.productos.filter(p=>p.tipo==='PT'), required:true});
-      const uomSel = Select({name:'uom_id', items:Store.state.uoms, required:true});
-      row.append(
-        Field('PT', ptSel),
-        Field('UOM', uomSel),
-        Field('Rendimiento', Input({name:'rendimiento', type:'number', step:'0.000001', required:true, value:'1'}))
-      );
+      const ptSel = Select({name:'producto_id', items:Store.state.productos.filter(p=>p.tipo==='PT'), required:true, value: pref?.producto_id ? String(pref.producto_id) : ''});
+      const uomSel = Select({name:'uom_id', items:Store.state.uoms, required:true, value: pref?.uom_id ? String(pref.uom_id) : ''});
+      const rendimientoField = Field('Rendimiento', Input({name:'rendimiento', type:'number', step:'0.000001', required:true, value: pref?.rendimiento != null ? String(pref.rendimiento) : '1'}));
+      const removeBtn = document.createElement('button'); removeBtn.type='button'; removeBtn.className='icon-btn'; removeBtn.textContent='Eliminar'; removeBtn.onclick=()=>{ row.remove(); };
+      row.append(Field('PT', ptSel), Field('UOM', uomSel), rendimientoField, removeBtn);
       row.addEventListener('change', (e)=>{
         if (e.target.name === 'producto_id') {
           const pid = Number(e.target.value||0);
@@ -912,6 +1251,10 @@ route('#/recetas', (root)=>{
           else { uomSel.disabled = false; }
         }
       });
+      if (pref?.producto_id) {
+        ptSel.value = String(pref.producto_id);
+        ptSel.dispatchEvent(new Event('change'));
+      }
       return row;
     };
 
@@ -944,76 +1287,132 @@ route('#/recetas', (root)=>{
     addIng.onclick=()=> { ingLines.appendChild(ingRow()); recalcTotals(); };
     addOut.onclick=()=> outLines.appendChild(outRow());
 
-    // Arranca con una fila por defecto
-    addIng.click();
+    if (Array.isArray(prefill.ingredientes) && prefill.ingredientes.length) {
+      prefill.ingredientes.forEach(item => ingLines.appendChild(ingRow(item)));
+    } else if (productPrefill) {
+      ingLines.appendChild(ingRow());
+    } else {
+      ingLines.appendChild(ingRow());
+    }
 
-    // Recalcular totales al cambiar factores
+    if (Array.isArray(prefill.salidas) && prefill.salidas.length) {
+      prefill.salidas.forEach(item => outLines.appendChild(outRow(item)));
+    } else if (prefill.productoId || prefill.producto_salida_id) {
+      outLines.appendChild(outRow({
+        producto_id: prefill.productoId || prefill.producto_salida_id,
+        uom_id: productPrefill?.uom_base_id || prefill.uom_salida_id || null,
+        rendimiento: 1
+      }));
+    } else {
+      outLines.appendChild(outRow());
+    }
+
+    recalcTotals();
+
     form.addEventListener('input', (e)=>{
       if (['mano_obra_crc','merma_crc','indirectos_pct'].includes(e.target.name)) recalcTotals();
     });
 
     Modal.open({
-      title:'Nueva receta',
+      title: isEdit ? 'Editar receta' : 'Nueva receta',
+      okText: 'Guardar',
       content: wrap,
       onOk: async ()=>{
         const payload = Object.fromEntries(new FormData(form).entries());
-        // Normalizar numéricos opcionales
-        ['mano_obra_crc','merma_crc','indirectos_pct'].forEach(k=>{
-          if (payload[k]!=='' && payload[k]!=null) payload[k]=Number(payload[k]);
-        });
+        payload.producto_salida_id = Number(payload.producto_salida_id || 0);
+        payload.uom_salida_id = Number(payload.uom_salida_id || 0);
+        payload.mano_obra_crc = Number(payload.mano_obra_crc || 0);
+        payload.merma_crc = Number(payload.merma_crc || 0);
+        payload.indirectos_pct = payload.indirectos_pct === '' ? null : Number(payload.indirectos_pct);
+        if (!payload.producto_salida_id) { Toast('Selecciona el producto de salida','error'); return false; }
+        if (!payload.uom_salida_id) { Toast('Selecciona la UOM de salida','error'); return false; }
+
+        const ingData = [];
+        for (const row of $$('.line', ingLines)) {
+          const data = Object.fromEntries($$('select,input', row).map(el=>[el.name, el.value]));
+          const item = {
+            producto_id: Number(data.producto_id || 0),
+            uom_id: Number(data.uom_id || 0),
+            cantidad: Number(data.cantidad || 0),
+            costo_unitario_crc: Number(data.costo_unitario_crc || 0),
+            otros_costos_crc: Number(data.otros_costos_crc || 0)
+          };
+          if (!item.producto_id || !item.uom_id || item.cantidad <= 0) {
+            Toast('Revisa los ingredientes, hay datos incompletos','error');
+            return false;
+          }
+          ingData.push(item);
+        }
+        if (!ingData.length) { Toast('Agrega al menos un ingrediente','error'); return false; }
+
+        const outData = [];
+        for (const row of $$('.line', outLines)) {
+          const data = Object.fromEntries($$('select,input', row).map(el=>[el.name, el.value]));
+          const item = {
+            producto_id: Number(data.producto_id || 0),
+            uom_id: Number(data.uom_id || 0),
+            rendimiento: Number(data.rendimiento || 0)
+          };
+          if (!item.producto_id || !item.uom_id || item.rendimiento <= 0) {
+            Toast('Revisa las salidas, hay datos incompletos','error');
+            return false;
+          }
+          outData.push(item);
+        }
+        if (!outData.length) { Toast('Agrega al menos una salida','error'); return false; }
+
+        payload.ingredientes = ingData;
+        payload.salidas = outData;
+
         try{
-          const rec = await fetchJSON(api('/recetas'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-          for (const row of $$('.line', ingLines)) {
-            const data = Object.fromEntries($$('select,input', row).map(el=>[el.name, el.value]));
-            data.costo_unitario_crc = Number(data.costo_unitario_crc||0);
-            data.otros_costos_crc = Number(data.otros_costos_crc||0);
-            await fetchJSON(api(`/recetas/${rec.id}/ingredientes`), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data)});
+          if (isEdit) {
+            await fetchJSON(api(`/recetas/${recetaId}`), {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+            Toast('Receta actualizada','success');
+          } else {
+            await fetchJSON(api('/recetas'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+            Toast('Receta creada','success');
           }
-          for (const row of $$('.line', outLines)) {
-            const data = Object.fromEntries($$('select,input', row).map(el=>[el.name, el.value]));
-            await fetchJSON(api(`/recetas/${rec.id}/salidas`), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data)});
-          }
-          Toast('Receta creada','success'); renderList();
-        }catch(e){ Toast(e.message,'error'); return false; }
+          await renderList(currentRecipeQuery);
+        }catch(e){ Toast(e.message || 'Error al guardar la receta','error'); return false; }
       }
     });
-
-    function quickProduct(tipo, selectEl){
-      const f = document.createElement('form'); f.className='form-grid';
-      f.append(
-        Field('Código interno (SKU)', Input({name:'sku', placeholder:'Opcional'})),
-        Field('Nombre', Input({name:'nombre', required:true})),
-        Field('Tipo', (()=>{ const s=Select({name:'tipo', items:[{id:'MP',nombre:'Materia Prima'},{id:'PT',nombre:'Producto Terminado'}], valueKey:'id', required:true}); s.value=tipo; return s;})()),
-        Field('UOM base', Select({name:'uom_base_id', items:Store.state.uoms, valueKey:'id', labelKey:'nombre', required:true})),
-        Field('Precio de venta (PT)', Input({name:'precio_venta_crc', type:'number', step:'0.01'})),
-        Field('Costo estándar (PT)', Input({name:'costo_estandar_crc', type:'number', step:'0.01'}))
-      );
-      Modal.open({
-        title:'Nuevo producto',
-        content: f,
-        onOk: async ()=>{
-          const payload = Object.fromEntries(new FormData(f).entries());
-          if (!payload.sku) payload.sku = `${slug(payload.nombre).slice(0,12)}-${Math.random().toString(36).slice(2,6)}`.toUpperCase();
-          payload.uom_base_id = Number(payload.uom_base_id);
-          if (payload.precio_venta_crc) payload.precio_venta_crc = Number(payload.precio_venta_crc);
-          if (payload.costo_estandar_crc) payload.costo_estandar_crc = Number(payload.costo_estandar_crc);
-          try{
-            await fetchJSON(api('/productos'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-            const productos = await fetchJSON(api('/productos')); Store.set({productos});
-            if (selectEl) {
-              selectEl.innerHTML='';
-              const ph = document.createElement('option'); ph.value=''; ph.textContent='Seleccione…'; selectEl.appendChild(ph);
-              const filter = tipo==='MP' ? (p)=>p.tipo==='MP' : (p)=>p.tipo==='PT';
-              Store.state.productos.filter(filter).forEach(p=>selectEl.appendChild(new Option(p.nombre, p.id)));
-              selectEl.value = Store.state.productos.find(p=>p.nombre===payload.nombre)?.id || '';
-              selectEl.dispatchEvent(new Event('change'));
-            }
-            Toast('Producto creado','success');
-          }catch(e){ Toast(e.message,'error'); return false; }
-        }
-      });
-    }
   }
+
+  const handlePendingRecipe = () => {
+    let pendingProduct = null;
+    try {
+      const raw = sessionStorage.getItem('pendingRecipeProduct');
+      if (raw) pendingProduct = JSON.parse(raw);
+    } catch (err) {
+      console.warn('No se pudo leer la receta pendiente', err);
+    }
+    if (pendingProduct) {
+      sessionStorage.removeItem('pendingRecipeProduct');
+      openRecetaModal({ productoId: pendingProduct.id, productoNombre: pendingProduct.nombre });
+      return;
+    }
+
+    let pendingModal = null;
+    try {
+      const rawModal = sessionStorage.getItem('pendingRecipeModal');
+      if (rawModal) pendingModal = JSON.parse(rawModal);
+    } catch (err) {
+      console.warn('No se pudo leer pendingRecipeModal', err);
+      pendingModal = {};
+    }
+    if (pendingModal) {
+      sessionStorage.removeItem('pendingRecipeModal');
+      openRecetaModal(typeof pendingModal === 'object' ? pendingModal : {});
+    }
+  };
+
+  if (window.__pendingRecipeHandler) {
+    window.removeEventListener('recipe-pending-ready', window.__pendingRecipeHandler);
+  }
+  window.__pendingRecipeHandler = handlePendingRecipe;
+  window.addEventListener('recipe-pending-ready', handlePendingRecipe);
+  handlePendingRecipe();
+
 });
 
 route('#/produccion', (root)=>{
@@ -1071,7 +1470,6 @@ route('#/produccion', (root)=>{
         mk('Unitario real', data.unitario_crc ?? 0)
       );
       const rows = data.consumos || [];
-[];  // <-- completa la línea anterior: const rows = data.consumos || [];
 
       const tbl = Table({columns:[
         {key:'nombre',label:'MP'},
@@ -1277,6 +1675,7 @@ route('#/finanzas', async (root)=>{
   const tabs = document.createElement('div'); tabs.className='tabs';
   tabs.innerHTML = `
     <button class="active" data-t="cuentas">Cuentas</button>
+    <button data-t="gastos">Gastos</button>
     <button data-t="indirectos">Indirectos</button>
     <span class="spacer"></span>
   `;
@@ -1287,7 +1686,7 @@ route('#/finanzas', async (root)=>{
   async function renderCuentas(){
     cont.innerHTML='';
     const head=document.createElement('div'); head.className='card';
-    head.innerHTML = `<b>Saldos por cobrar/pagar</b> · Se calculan desde las facturas de ventas/compras (contado o crédito).`;
+    head.innerHTML = `<b>Saldos por cobrar/pagar</b> - Se calculan desde las facturas de ventas/compras (contado o crédito).`;
     cont.appendChild(head);
 
     const grid=document.createElement('div'); grid.className='grid-2'; cont.appendChild(grid);
@@ -1350,7 +1749,7 @@ route('#/finanzas', async (root)=>{
         <label class="field"><span>Nombre</span><input name="nombre" required placeholder="Alquiler, Luz, Limpieza…"></label>
         <label class="field"><span>Monto mensual (CRC)</span><input name="monto_mensual_crc" type="number" step="0.01" required></label>
         <label class="field"><span>Activo</span>
-          <select name="activo"><option value="1">Sí</option><option value="0">No</option></select>
+          <select name="activo"><option value="1">Si</option><option value="0">No</option></select>
         </label>
         <div class="form-actions">
           <button class="btn-primary" type="submit">Agregar</button>
@@ -1400,9 +1799,57 @@ route('#/finanzas', async (root)=>{
     });
   }
 
-  function switchTab(kind){
+  
+  async function renderGastos(){
+    cont.innerHTML='';
+    const card = document.createElement('div'); card.className='card';
+    card.innerHTML = `
+      <h3>Gastos operativos</h3>
+      <div class="form-grid">
+        <label class="field"><span>Fecha</span><input name="g_fecha" type="date" value="${today()}"></label>
+        <label class="field"><span>Categoría</span><input name="g_categoria" placeholder="General, Fletes, Servicios…"></label>
+        <label class="field"><span>Monto (CRC)</span><input name="g_monto" type="number" step="0.01" value="0"></label>
+        <label class="field"><span>Proveedor</span><select name="g_prov"></select></label>
+        <label class="field"><span>Método</span><select name="g_met"><option>EFECTIVO</option><option>TRANSFERENCIA</option><option>TARJETA</option><option>OTRO</option></select></label>
+        <label class="field" style="grid-column:1/-1"><span>Nota</span><input name="g_nota" placeholder="Opcional"></label>
+        <div class="form-actions"><button id="btnAddGasto" class="btn-primary">Agregar gasto</button></div>
+      </div>
+      <div id="tablaGastos" style="margin-top:10px"></div>
+    `;
+    cont.appendChild(card);
+    const selP = card.querySelector('select[name="g_prov"]'); selP.innerHTML='<option value="">—</option>'; (Store.state.proveedores||[]).forEach(p=> selP.appendChild(new Option(p.nombre, p.id)));
+    async function load(){
+      const rows = await fetchJSON(api('/finanzas/gastos')).catch(()=>[]);
+      const box = card.querySelector('#tablaGastos'); box.innerHTML='';
+      box.appendChild(Table({columns:[
+        {key:'fecha',label:'Fecha',format:fmt.date},
+        {key:'categoria',label:'Categoría'},
+        {key:'proveedor_nombre',label:'Proveedor'},
+        {key:'monto_crc',label:'Monto',format:fmt.money},
+        {key:'metodo',label:'Método'},
+        {key:'nota',label:'Nota'}
+      ], rows}));
+    }
+    await load();
+    card.querySelector('#btnAddGasto').onclick = async ()=>{
+      const body = {
+        fecha: card.querySelector('input[name="g_fecha"]').value,
+        categoria: card.querySelector('input[name="g_categoria"]').value || 'General',
+        monto_crc: Number(card.querySelector('input[name="g_monto"]').value||0),
+        proveedor_id: Number(card.querySelector('select[name="g_prov"]').value||0) || null,
+        metodo: card.querySelector('select[name="g_met"]').value || 'EFECTIVO',
+        nota: card.querySelector('input[name="g_nota"]').value || null,
+      };
+      if (!body.fecha || body.monto_crc<=0) return Toast('Fecha y monto > 0','error');
+      try{ await fetchJSON(api('/finanzas/gastos'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)}); Toast('Gasto registrado','success'); await load(); }
+      catch(e){ Toast(e.message,'error'); }
+    };
+  }
+function switchTab(kind){
     tabs.querySelectorAll('button[data-t]').forEach(b=>b.classList.toggle('active', b.dataset.t===kind));
-    if (kind==='indirectos') renderIndirectos(); else renderCuentas();
+    if (kind==='indirectos') renderIndirectos();
+    else if (kind==='gastos') renderGastos();
+    else renderCuentas();
   }
 
   tabs.addEventListener('click', (e)=>{
@@ -1412,409 +1859,104 @@ route('#/finanzas', async (root)=>{
   switchTab('cuentas');
 });
 
-/* ================= PLANILLAS ================= */
-route('#/planillas', async (root) => {
-  // Panel superior: crear planilla y filtros
-  const top = document.createElement('div'); top.className = 'panel';
+/* ================= RUTAS ================= */
+route('#/rutas', async (root)=>{
+  const top = document.createElement('div'); top.className='panel';
   top.innerHTML = `
-    <h3>Planillas (semanales)</h3>
+    <h3>Rutas de entrega</h3>
     <div class="form-grid">
-      <label class="field">
-        <span>Semana (inicio)</span>
-        <input name="semana_inicio" type="date" required>
-      </label>
-      <label class="field">
-        <span>Nota</span>
-        <input name="nota" placeholder="Opcional">
-      </label>
-      <div class="form-actions">
-        <button id="btnNuevaPlanilla" class="btn-primary">Crear planilla</button>
-      </div>
-    </div>
-    <div class="subpanel" style="margin-top:8px">
-      <h4>Buscar por mes</h4>
-      <div class="form-grid">
-        <label class="field"><span>Mes (YYYY-MM)</span><input name="f_mes" placeholder="2025-03"></label>
-        <div class="form-actions"><button id="btnFiltrar" class="btn">Filtrar</button></div>
-      </div>
+      <label class="field"><span>Nombre</span><input name="r_nombre" required></label>
+      <label class="field"><span>Descripción</span><input name="r_desc"></label>
+      <label class="field"><span>Día semana</span><input name="r_dia" placeholder="1=Lunes .. 7=Dom"></label>
+      <label class="field"><span>Activo</span><select name="r_act"><option value="1">Si</option><option value="0">No</option></select></label>
+      <div class="form-actions"><button id="btnAddRuta" class="btn-primary">Crear ruta</button></div>
     </div>
   `;
   root.appendChild(top);
 
-  const listWrap = document.createElement('div'); listWrap.className = 'panel'; root.appendChild(listWrap);
-  const detailWrap = document.createElement('div'); detailWrap.className = 'panel'; root.appendChild(detailWrap);
+  const grid = document.createElement('div'); grid.className='grid-2'; root.appendChild(grid);
+  const lst = document.createElement('div'); lst.className='panel'; grid.appendChild(lst);
+  const det = document.createElement('div'); det.className='panel'; grid.appendChild(det);
 
-  async function loadList(mes=null){
-    const qs = mes ? `?mes=${encodeURIComponent(mes)}` : '';
-    const rows = await fetchJSON(api(`/planillas${qs}`)).catch(()=>[]);
-    listWrap.innerHTML = '';
-    const tbl = Table({
-      columns: [
-        {key:'id', label:'#'},
-        {key:'semana_inicio', label:'Semana', format: fmt.date},
-        {key:'nota', label:'Nota'}
-      ],
-      rows
-    });
-    listWrap.appendChild(tbl);
-    listWrap.querySelectorAll('tbody tr').forEach((tr, i) => {
+  async function loadRutas(){
+    const rutas = await fetchJSON(api('/rutas')).catch(()=>[]);
+    lst.innerHTML = '';
+    const tbl = Table({columns:[
+      {key:'nombre',label:'Nombre'}, {key:'descripcion',label:'Descripción'},
+      {key:'dia_semana',label:'Día'}, {key:'activo',label:'Activo'}
+    ], rows:rutas});
+    lst.appendChild(tbl);
+    lst.querySelectorAll('tbody tr').forEach((tr,i)=>{
       tr.style.cursor='pointer';
-      tr.onclick=()=> openPlanilla(rows[i].id);
+      tr.onclick=()=> openRuta(rutas[i]);
     });
   }
+  await loadRutas();
 
-  async function createPlanilla(){
-    const semana_inicio = top.querySelector('input[name="semana_inicio"]').value;
-    const nota = top.querySelector('input[name="nota"]').value || null;
-    if (!semana_inicio) return Toast('Elegí la fecha de inicio de semana','error');
-    try{
-      const res = await fetchJSON(api('/planillas'), {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({semana_inicio, nota})
-      });
-      Toast(`Planilla #${res.id} creada`, 'success');
-      await loadList(top.querySelector('input[name="f_mes"]').value || null);
-      await openPlanilla(res.id);
-    }catch(e){ Toast(e.message, 'error'); }
-  }
-
-  $('#btnNuevaPlanilla', top).onclick = createPlanilla;
-  $('#btnFiltrar', top).onclick = async ()=>{
-    await loadList(top.querySelector('input[name="f_mes"]').value || null);
-    detailWrap.innerHTML='';
+  $('#btnAddRuta', top).onclick = async ()=>{
+    const body={
+      nombre: top.querySelector('input[name=r_nombre]').value,
+      descripcion: top.querySelector('input[name=r_desc]').value||null,
+      dia_semana: Number(top.querySelector('input[name=r_dia]').value||0)||null,
+      activo: Number(top.querySelector('select[name=r_act]').value||1)
+    };
+    if (!body.nombre) return Toast('Nombre requerido','error');
+    try{ await fetchJSON(api('/rutas'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)}); Toast('Ruta creada','success'); await loadRutas(); }
+    catch(e){ Toast(e.message,'error'); }
   };
 
-  await loadList();
-
-  // ---------- Detalle de una planilla ----------
-  async function openPlanilla(id){
-    const data = await fetchJSON(api(`/planillas/${id}`)).catch(()=>null);
-    if (!data) return Toast('No se pudo cargar la planilla', 'error');
-
-    detailWrap.innerHTML = `
-      <h3>Planilla #${id} · Semana que inicia ${fmt.date(data.semana_inicio)}</h3>
-
-      <div class="form-grid" style="margin-bottom:8px">
-        <label class="field"><span>Empleado</span>
-          <select name="emp_sel"></select>
-        </label>
-        <label class="field"><span>Tarifa hora (CRC)</span>
-          <input name="tarifa" type="number" step="0.01" value="0">
-        </label>
-        <label class="field"><span>Rol</span>
-          <input name="rol" placeholder="Operario, Producción…">
-        </label>
-        <div class="form-actions">
-          <button id="btnAddEmp" class="btn">Agregar a planilla</button>
-        </div>
-      </div>
-
-      <div class="subpanel">
-        <h4>Captura diaria rápida</h4>
-        <div class="form-grid">
-          <label class="field"><span>Fecha</span><input name="cap_fecha" type="date"></label>
-          <label class="field"><span>Empleado</span><select name="cap_emp"></select></label>
-          <label class="field"><span>Horas normales</span><input name="cap_reg" type="number" step="0.01" value="0"></label>
-          <label class="field"><span>Horas extra</span><input name="cap_ext" type="number" step="0.01" value="0"></label>
-          <label class="field"><span>Horas dobles</span><input name="cap_dob" type="number" step="0.01" value="0"></label>
-          <label class="field"><span>₡/h extra</span><input name="cap_tar_ext" type="number" step="0.01" value="0"></label>
-          <label class="field"><span>₡/h doble</span><input name="cap_tar_dob" type="number" step="0.01" value="0"></label>
-          <div class="form-actions">
-            <button id="btnCapGuardar" class="btn-primary">Guardar día</button>
-          </div>
-        </div>
-        <small class="muted">Esta captura escribe en los días del detalle del empleado. Si el empleado no está en la planilla, agrégalo arriba primero.</small>
-      </div>
-
-      <div class="subpanel">
-        <h4>Factores de cálculo (vista)</h4>
-        <div class="form-grid">
-          <label class="field"><span>Factor extra</span><input name="fx" type="number" step="0.1" value="1.5"></label>
-          <label class="field"><span>Factor dobles</span><input name="fd" type="number" step="0.1" value="2.0"></label>
-          <label class="field"><span>Factor feriado</span><input name="ff" type="number" step="0.1" value="2.0"></label>
-        </div>
-      </div>
-
-      <div id="detTabla"></div>
-      <div id="resumenSemanal" style="margin-top:12px"></div>
-
-      <div class="subpanel" style="margin-top:12px">
-        <h4>Pagos de planilla</h4>
-        <div class="form-grid">
-          <label class="field"><span>Fecha</span><input name="pay_fecha" type="date" value="${today()}"></label>
-          <label class="field"><span>Empleado</span><select name="pay_emp"></select></label>
-          <label class="field"><span>Monto (CRC)</span><input name="pay_monto" type="number" step="0.01" value="0"></label>
-          <label class="field"><span>Método</span><input name="pay_metodo" placeholder="Transferencia, Efectivo…"></label>
-          <label class="field"><span>Nota</span><input name="pay_nota" placeholder="Opcional"></label>
-          <div class="form-actions"><button id="btnAddPago" class="btn">Registrar pago</button></div>
-        </div>
-        <div id="tablaPagos" style="margin-top:10px"></div>
-      </div>
+  async function openRuta(r){
+    det.innerHTML = `<h3>${r.nombre}</h3>`;
+    const wrap = document.createElement('div'); wrap.className='form-grid';
+    wrap.innerHTML = `
+      <label class="field"><span>Cliente</span><select name="rc_cli"></select></label>
+      <label class="field"><span>Orden</span><input name="rc_orden" type="number" step="1" value="1"></label>
+      <label class="field"><span>Ventana horaria</span><input name="rc_vh" placeholder="8:00-10:00"></label>
+      <div class="form-actions"><button id="btnRutaAddCli" class="btn">Agregar</button></div>
     `;
+    det.appendChild(wrap);
+    const sel = wrap.querySelector('select[name=rc_cli]'); sel.innerHTML='<option value="">Seleccione…</option>';
+    Store.state.clientes.forEach(c=> sel.appendChild(new Option(c.nombre, c.id)));
 
-    // cargar empleados a selects
-    const sel = detailWrap.querySelector('select[name="emp_sel"]');
-    sel.innerHTML = '<option value="">Seleccione…</option>';
-    Store.state.empleados.forEach(e => sel.appendChild(new Option(e.nombre, e.id)));
-
-    const selCap = detailWrap.querySelector('select[name="cap_emp"]');
-    const selPay = detailWrap.querySelector('select[name="pay_emp"]');
-    [selCap, selPay].forEach(s=>{
-      s.innerHTML = '<option value="">Seleccione…</option>';
-      Store.state.empleados.forEach(e => s.appendChild(new Option(e.nombre, e.id)));
-    });
-
-    $('#btnAddEmp', detailWrap).onclick = async ()=>{
-      const empleado_id = Number(sel.value || 0) || null;
-      const tarifa = Number(detailWrap.querySelector('input[name="tarifa"]').value||0);
-      const rol = detailWrap.querySelector('input[name="rol"]').value || null;
-      if (!empleado_id && !rol) return Toast('Elija empleado o escriba persona/rol', 'error');
-      try{
-        await fetchJSON(api(`/planillas/${id}/detalles`), {
-          method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({empleado_id, tarifa_hora_crc: tarifa, rol})
-        });
-        Toast('Empleado agregado', 'success');
-        await openPlanilla(id);
-      }catch(e){ Toast(e.message,'error'); }
-    };
-
-    // Captura diaria rápida
-    $('#btnCapGuardar', detailWrap).onclick = async ()=>{
-      const fecha = detailWrap.querySelector('input[name="cap_fecha"]').value;
-      const empId = Number(detailWrap.querySelector('select[name="cap_emp"]').value||0);
-      if (!fecha || !empId) return Toast('Elige fecha y empleado','error');
-
-      const det = (data.detalles||[]).find(d=> Number(d.empleado_id)===empId);
-      if (!det) return Toast('Primero agrega el empleado a la planilla (arriba).','error');
-
-      const payload = {
-        dias: [{
-          fecha,
-          horas_reg: Number(detailWrap.querySelector('input[name="cap_reg"]').value||0),
-          horas_extra: Number(detailWrap.querySelector('input[name="cap_ext"]').value||0),
-          horas_doble: Number(detailWrap.querySelector('input[name="cap_dob"]').value||0),
-          feriado: false,
-          horas_feriado: 0,
-          tarifa_extra_crc: Number(detailWrap.querySelector('input[name="cap_tar_ext"]').value||0),
-          tarifa_doble_crc: Number(detailWrap.querySelector('input[name="cap_tar_dob"]').value||0),
-        }]
-      };
-      try{
-        await fetchJSON(api(`/planillas/${id}/detalles/${det.id}/dias`), {
-          method:'PUT', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify(payload)
-        });
-        Toast('Día guardado','success');
-        const fresh = await fetchJSON(api(`/planillas/${id}`));
-        renderDetalles(id, fresh);
-      }catch(e){ Toast(e.message,'error'); }
-    };
-
-    // Pagos
-    async function loadPagos(){
-      const pagos = await fetchJSON(api(`/planillas/${id}/pagos`)).catch(()=>[]);
-      const cont = $('#tablaPagos', detailWrap); cont.innerHTML='';
-      cont.appendChild(Table({columns:[
-        {key:'fecha', label:'Fecha', format:fmt.date},
-        {key:'empleado_nombre', label:'Empleado'},
-        {key:'monto_crc', label:'Monto', format:fmt.money},
-        {key:'metodo', label:'Método'},
-        {key:'nota', label:'Nota'}
-      ], rows: pagos}));
+    const cont = document.createElement('div'); det.appendChild(cont);
+    async function loadClientes(){
+      const rows = await fetchJSON(api(`/rutas/${r.id}/clientes`)).catch(()=>[]);
+      cont.innerHTML=''; cont.appendChild(Table({columns:[
+        {key:'cliente_nombre',label:'Cliente'}, {key:'orden',label:'Orden'}, {key:'ventana_horaria',label:'Ventana'}
+      ], rows}));
     }
-    $('#btnAddPago', detailWrap).onclick = async ()=>{
-      const body = {
-        fecha: detailWrap.querySelector('input[name="pay_fecha"]').value,
-        empleado_id: Number(detailWrap.querySelector('select[name="pay_emp"]').value||0) || null,
-        monto_crc: Number(detailWrap.querySelector('input[name="pay_monto"]').value||0),
-        metodo: detailWrap.querySelector('input[name="pay_metodo"]').value || null,
-        nota: detailWrap.querySelector('input[name="pay_nota"]').value || null,
-      };
-      try{
-        await fetchJSON(api(`/planillas/${id}/pagos`), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-        Toast('Pago registrado','success'); await loadPagos();
-      }catch(e){ Toast(e.message,'error'); }
+    await loadClientes();
+
+    $('#btnRutaAddCli', wrap).onclick = async ()=>{
+      const body={ cliente_id: Number(sel.value||0), orden: Number(wrap.querySelector('input[name=rc_orden]').value||0), ventana_horaria: wrap.querySelector('input[name=rc_vh]').value||null, nota:null };
+      if (!body.cliente_id) return Toast('Selecciona cliente','error');
+      try{ await fetchJSON(api(`/rutas/${r.id}/clientes`), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)}); Toast('Cliente agregado','success'); await loadClientes(); }
+      catch(e){ Toast(e.message,'error'); }
     };
-    await loadPagos();
-
-    renderDetalles(id, data);
   }
+});
 
-  function renderDetalles(id, data){
-    const fx = Number(detailWrap.querySelector('input[name="fx"]').value||1.5);
-    const fd = Number(detailWrap.querySelector('input[name="fd"]').value||2.0);
-    const ff = Number(detailWrap.querySelector('input[name="ff"]').value||2.0);
+/* ================= PLANILLAS ================= */
+route('#/planillas', (root) => {
+  const tryRender = () => {
+    if (typeof window.renderPlanillas === 'function') {
+      window.renderPlanillas(root);
+      return true;
+    }
+    return false;
+  };
 
-    const rows = (data.detalles||[]).map(d => {
-      const z = d.resumen || {};
-      const tarifa = Number(d.tarifa_hora_crc||0);
-      const subtotal = tarifa * Number(z.reg||0);
-      const diasTrab = Number(z.dias_trab||0);
-      const salarioDiarioProm = diasTrab ? (subtotal / diasTrab) : 0;
+  if (tryRender()) return;
 
-      const hExt = Number(z.ext||0);
-      const pxExt = tarifa * fx;
-      const totExt = hExt * pxExt;
+  root.innerHTML = '<div class="card"><h3>Planillas</h3><p class="muted">Cargando planillas...</p></div>';
+  const onReady = () => {
+    if (location.hash !== '#/planillas') return;
+    if (tryRender()) {
+      window.removeEventListener('planillas-ready', onReady);
+    }
+  };
 
-      const ferDias = Number(z.feriados||0);
-      const hFeriado = Number(z.horas_feriado||0);
-      const totFeriados = hFeriado * tarifa * ff;
-
-      const hDob = Number(z.dob||0);
-      const pxDob = tarifa * fd;
-      const totDob = hDob * pxDob;
-
-      const bruto = subtotal + totExt + totFeriados + totDob;
-
-      return {
-        det_id: d.id,
-        empleado: d.empleado_nombre || d.persona || '—',
-        rol: d.rol || '—',
-        tarifa,
-        diasTrab,
-        salarioDiarioProm,
-        subtotal,
-        hExt, pxExt, totExt,
-        ferDias, hFeriado, totFeriados,
-        hDob, pxDob, totDob,
-        bruto,
-        raw: d
-      };
-    });
-
-    const cont = $('#detTabla', detailWrap); cont.innerHTML='';
-    const wrap = document.createElement('div'); wrap.className='table-wrap';
-    const table = document.createElement('table'); table.className='table';
-    table.innerHTML = `
-      <thead><tr>
-        <th>Empleado</th><th>Rol</th><th>Tarifa</th>
-        <th>Días trab.</th><th>Salario diario</th><th>Subtotal (base)</th>
-        <th>HE (h)</th><th>₡/h extra</th><th>Total extras</th>
-        <th># feriados</th><th>h feriado</th><th>Total feriados</th>
-        <th>HD (h)</th><th>₡/h doble</th><th>Total dobles</th>
-        <th>SALARIO BRUTO</th>
-        <th></th>
-      </tr></thead>
-      <tbody></tbody>
-    `;
-    rows.forEach(r => {
-      const tr=document.createElement('tr');
-      tr.innerHTML = `
-        <td>${r.empleado}</td>
-        <td>${r.rol}</td>
-        <td>${fmt.money(r.tarifa)}</td>
-        <td>${r.diasTrab}</td>
-        <td>${fmt.money(r.salarioDiarioProm)}</td>
-        <td>${fmt.money(r.subtotal)}</td>
-        <td>${r.hExt}</td>
-        <td>${fmt.money(r.pxExt)}</td>
-        <td>${fmt.money(r.totExt)}</td>
-        <td>${r.ferDias}</td>
-        <td>${r.hFeriado}</td>
-        <td>${fmt.money(r.totFeriados)}</td>
-        <td>${r.hDob}</td>
-        <td>${fmt.money(r.pxDob)}</td>
-        <td>${fmt.money(r.totDob)}</td>
-        <td><b>${fmt.money(r.bruto)}</b></td>
-        <td><button class="btn" data-edit="${r.det_id}">Editar diario</button></td>
-      `;
-      table.querySelector('tbody').appendChild(tr);
-    });
-    wrap.appendChild(table); cont.appendChild(wrap);
-
-    // Resumen semanal
-    const R = rows.reduce((acc, r) => {
-      acc.subtotal += r.subtotal;
-      acc.totExt  += r.totExt;
-      acc.totFeri += r.totFeriados;
-      acc.totDob  += r.totDob;
-      acc.bruto   += r.bruto;
-      return acc;
-    }, {subtotal:0, totExt:0, totFeri:0, totDob:0, bruto:0});
-    const res = $('#resumenSemanal', detailWrap);
-    res.innerHTML = `
-      <div class="kpi-grid">
-        <div class="card kpi"><h3>Subtotal base</h3><div class="big">${fmt.money(R.subtotal)}</div></div>
-        <div class="card kpi"><h3>Extras</h3><div class="big">${fmt.money(R.totExt)}</div></div>
-        <div class="card kpi"><h3>Feriados</h3><div class="big">${fmt.money(R.totFeri)}</div></div>
-        <div class="card kpi"><h3>Dobles</h3><div class="big">${fmt.money(R.totDob)}</div></div>
-        <div class="card kpi"><h3>SALARIO BRUTO</h3><div class="big">${fmt.money(R.bruto)}</div></div>
-      </div>
-    `;
-
-    // Handlers
-    table.addEventListener('click', (e)=>{
-      const idbtn = e.target?.getAttribute?.('data-edit');
-      if (!idbtn) return;
-      const det = rows.find(x=> String(x.det_id)===String(idbtn))?.raw;
-      if (det) openHorasModal(id, data.semana_inicio, det);
-    });
-
-    // Recalcular cuando cambian factores
-    detailWrap.querySelectorAll('input[name="fx"], input[name="fd"], input[name="ff"]').forEach(inp=>{
-      inp.addEventListener('input', ()=> renderDetalles(id, data));
-    });
-  }
-
-  function openHorasModal(planillaId, semanaInicio, det){
-    const start = new Date(semanaInicio);
-    const diasBase = [...Array(7)].map((_,i)=>{
-      const d = new Date(start); d.setDate(d.getDate()+i);
-      const key = d.toISOString().slice(0,10);
-      const base = det.dias?.[key] || {horas_reg:0, horas_extra:0, horas_doble:0, feriado:false, horas_feriado:0};
-      return {fecha:key, ...base};
-    });
-
-    const form = document.createElement('form'); form.className='form-grid';
-    const grid = document.createElement('div'); grid.className='table-wrap';
-    const tbl = document.createElement('table'); tbl.className='table';
-    tbl.innerHTML = `
-      <thead><tr><th>Día</th><th>Normales</th><th>Extra</th><th>Dobles</th><th>Feriado</th><th>h Feriado</th></tr></thead>
-      <tbody></tbody>
-    `;
-    diasBase.forEach(d=>{
-      const tr=document.createElement('tr');
-      tr.innerHTML=`
-        <td>${d.fecha}</td>
-        <td><input name="reg-${d.fecha}" type="number" step="0.01" value="${d.horas_reg}"></td>
-        <td><input name="ext-${d.fecha}" type="number" step="0.01" value="${d.horas_extra}"></td>
-        <td><input name="dob-${d.fecha}" type="number" step="0.01" value="${d.horas_doble}"></td>
-        <td style="text-align:center"><input name="fer-${d.fecha}" type="checkbox" ${d.feriado?'checked':''}></td>
-        <td><input name="hfer-${d.fecha}" type="number" step="0.01" value="${d.horas_feriado}"></td>
-      `;
-      tbl.querySelector('tbody').appendChild(tr);
-    });
-    grid.appendChild(tbl);
-
-    form.append(grid);
-
-    Modal.open({
-      title: `Editar diario · ${det.empleado_nombre || det.persona || ''}`,
-      content: form,
-      onOk: async ()=>{
-        const payload = {
-          dias: diasBase.map(d => ({
-            fecha: d.fecha,
-            horas_reg: Number(form.querySelector(`input[name="reg-${d.fecha}"]`).value||0),
-            horas_extra: Number(form.querySelector(`input[name="ext-${d.fecha}"]`).value||0),
-            horas_doble: Number(form.querySelector(`input[name="dob-${d.fecha}"]`).value||0),
-            feriado: !!form.querySelector(`input[name="fer-${d.fecha}"]`).checked,
-            horas_feriado: Number(form.querySelector(`input[name="hfer-${d.fecha}"]`).value||0),
-          }))
-        };
-        try{
-          await fetchJSON(api(`/planillas/${planillaId}/detalles/${det.id}/dias`), {
-            method:'PUT', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify(payload)
-          });
-          Toast('Horas diarias guardadas','success');
-          const data = await fetchJSON(api(`/planillas/${planillaId}`));
-          renderDetalles(planillaId, data);
-        }catch(e){ Toast(e.message,'error'); return false; }
-      }
-    });
-  }
+  window.addEventListener('planillas-ready', onReady);
 });
 
 /* ================= BÚSQUEDA GLOBAL ================= */
@@ -1827,7 +1969,7 @@ function cardList(title, data, keys){
   card.innerHTML = `<h3>${title}</h3>`;
   const ul=document.createElement('ul'); ul.className='list';
   data.slice(0,12).forEach(r=>{
-    const li=document.createElement('li'); li.innerHTML = keys.map(k=>`<span>${(r[k]??'')}</span>`).join(' · '); ul.appendChild(li);
+    const li=document.createElement('li'); li.innerHTML = keys.map(k=>`<span>${(r[k]??'')}</span>`).join(' - '); ul.appendChild(li);
   });
   if (!data.length) ul.innerHTML = '<li class="muted">Sin resultados</li>';
   card.appendChild(ul); return card;
@@ -1865,10 +2007,64 @@ navigate(location.hash || '#/dashboard');
 // Re-render on catalogs update
 Store.subscribe(()=> {
   const h=location.hash;
-  if (['#/ventas','#/compras','#/productos','#/contactos','#/recetas','#/produccion','#/planillas','#/inventario','#/finanzas'].includes(h)) navigate(h);
+  if (['#/ventas','#/compras','#/productos','#/contactos','#/recetas','#/produccion','#/planillas','#/inventario','#/finanzas','#/rutas'].includes(h)) navigate(h);
 });
 
 // Quick create -> ir a ventas
 const quick = $('#quickCreateBtn');
-if (quick) quick.onclick = () => { location.hash = '#/ventas'; };
+if (quick) quick.onclick = () => openQuickCreate();
+
+function openQuickCreate() {
+  const tpl = document.getElementById('tpl-quick-create');
+  if (!tpl) { location.hash = '#/ventas'; return; }
+  const content = tpl.content.cloneNode(true);
+  content.querySelectorAll('[data-action="openForm"]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const target = btn.dataset.form;
+      Modal.close();
+      handleQuickCreateSelection(target);
+    });
+  });
+  Modal.open({ title:'Creacion rapida', content, okText:'Cerrar', onOk: () => true });
+}
+
+function handleQuickCreateSelection(form) {
+  switch (form) {
+    case 'producto-mp':
+      sessionStorage.setItem('pendingProductModal', JSON.stringify({ tipo: 'MP' }));
+      if (location.hash === '#/productos') {
+        window.dispatchEvent(new CustomEvent('product-modal-pending'));
+      } else {
+        location.hash = '#/productos';
+      }
+      break;
+    case 'producto-pt':
+      sessionStorage.removeItem('pendingProductModal');
+      sessionStorage.setItem('pendingRecipeModal', JSON.stringify({ createPT: true }));
+      if (location.hash === '#/recetas') {
+        window.dispatchEvent(new CustomEvent('recipe-pending-ready'));
+      } else {
+        location.hash = '#/recetas';
+      }
+      break;
+    case 'receta':
+      sessionStorage.setItem('pendingRecipeModal', '1');
+      if (location.hash === '#/recetas') {
+        window.dispatchEvent(new CustomEvent('recipe-pending-ready'));
+      } else {
+        location.hash = '#/recetas';
+      }
+      break;
+    case 'planilla':
+      location.hash = '#/planillas';
+      break;
+    case 'merma':
+      location.hash = '#/inventario';
+      break;
+    default:
+      break;
+  }
+}
+
+
 
