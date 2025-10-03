@@ -16,6 +16,7 @@ from .routers import (
     costos,
     costeo,
     planilla,
+    planillas_dias,
     reportes,
     rutas,
     vacaciones,
@@ -44,6 +45,7 @@ app.include_router(finanzas.router)
 app.include_router(costos.router)      # /costos/mp
 app.include_router(costeo.router)      # /costeo/recetas/{id}, /costeo/tandas/{id}
 app.include_router(planilla.router)
+app.include_router(planillas_dias.router)
 app.include_router(reportes.router)
 app.include_router(rutas.router, prefix="/rutas", tags=["rutas"])
 app.include_router(vacaciones.router, prefix="/vacaciones", tags=["vacaciones"])

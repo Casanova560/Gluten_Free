@@ -610,6 +610,97 @@ route('#/contactos', (root) => {
     });
   }
 });
+
+// === Planillas: múltiples días con líneas de empleados ===
+route('#/planillas', (root) => {
+  const dias = [];
+
+  const lineaTotal = (l) => {
+    const t = Number(l.tarifaBase||0);
+    return t*Number(l.horas||0) + t*1.5*Number(l.horasExtra||0) + t*1.5*2*Number(l.horasDoble||0);
+  };
+
+  function render(){
+    root.innerHTML = '';
+    const header = document.createElement('div'); header.className='toolbar';
+    const addDia = document.createElement('button'); addDia.className='btn-primary'; addDia.textContent='+ Nuevo día';
+    addDia.onclick = ()=>{ dias.push({ fecha: today(), lineas: [] }); render(); };
+    header.appendChild(addDia);
+    root.appendChild(header);
+
+    if (!dias.length) {
+      const empty = document.createElement('div'); empty.className='card'; empty.innerHTML='<p class="muted">Sin días creados. Usa "+ Nuevo día".</p>';
+      root.appendChild(empty); return;
+    }
+
+    dias.forEach((d, di)=>{
+      const card = document.createElement('div'); card.className='card';
+      const top = document.createElement('div'); top.className='toolbar';
+      const fechaField = Field('Fecha', (()=>{ const i=Input({name:'fecha', type:'date', value:d.fecha||today()}); i.addEventListener('input',()=>{ d.fecha=i.value;}); return i; })());
+      const delDia = document.createElement('button'); delDia.className='icon-btn'; delDia.textContent='🗑️'; delDia.title='Eliminar día'; delDia.onclick=()=>{ dias.splice(di,1); render(); };
+      top.append(fechaField, delDia); card.appendChild(top);
+
+      const table = document.createElement('table'); table.className='table';
+      const thead=document.createElement('thead'); thead.innerHTML = '<tr><th>Empleado</th><th>Tarifa base</th><th>Horas</th><th>Extra</th><th>Extra doble</th><th>Total línea</th><th></th></tr>';
+      const tbody=document.createElement('tbody');
+
+  function drawLines(){
+    tbody.innerHTML='';
+    d.lineas.forEach((e, li)=>{
+      const tr=document.createElement('tr');
+      function mkInput(type, val, on){ const i=document.createElement('input'); i.type=type; i.value=val??''; if(type==='number'){i.step='0.01'; i.min='0';} i.addEventListener('input',()=>on(i.value)); return i; }
+      const tdNom=document.createElement('td');
+      const selEmp = Select({ name:'empleado', items: Store.state.empleados||[], valueKey:'id', labelKey:'nombre', value:String(e.empleado_id||e.empleadoId||'') });
+      const tdTar=document.createElement('td'); const inpTar=mkInput('number', e.tarifa_base_crc ?? e.tarifaBase, v=>{ e.tarifa_base_crc=Number(v||0); refreshRow();});
+      selEmp.addEventListener('change',()=>{ const empId = selEmp.value; e.empleado_id = Number(empId); const emp = Store.state.empleados.find(x=>String(x.id)===String(empId)); e.tarifa_base_crc = Number(emp?.tarifa_hora_crc||0); inpTar.value = String(e.tarifa_base_crc||0); refreshRow();});
+      tdNom.appendChild(selEmp);
+      tdTar.appendChild(inpTar);
+      const tdH=document.createElement('td'); const inpH=mkInput('number', e.horas, v=>{ e.horas=Number(v||0); refreshRow();}); tdH.appendChild(inpH);
+      const tdHE=document.createElement('td'); const inpHE=mkInput('number', e.horas_extra ?? e.horasExtra, v=>{ e.horas_extra=Number(v||0); refreshRow();}); tdHE.appendChild(inpHE);
+      const tdHD=document.createElement('td'); const inpHD=mkInput('number', e.horas_doble ?? e.horasDoble, v=>{ e.horas_doble=Number(v||0); refreshRow();}); tdHD.appendChild(inpHD);
+      const tdTot=document.createElement('td'); tdTot.className='num';
+      const tdDel=document.createElement('td'); const btnDel=document.createElement('button'); btnDel.className='icon-btn'; btnDel.textContent='🗑️'; btnDel.title='Eliminar línea'; btnDel.onclick=()=>{ d.lineas.splice(li,1); drawLines(); updateTotals();}; tdDel.appendChild(btnDel);
+
+      function localTotal(row){ const t=Number(row.tarifa_base_crc||0); return t*Number(row.horas||0)+t*1.5*Number(row.horas_extra||0)+t*1.5*2*Number(row.horas_doble||0); }
+      function refreshRow(){ tdTot.textContent = fmt.money(localTotal(e)); updateTotals(); }
+          refreshRow();
+          tr.append(tdNom, tdTar, tdH, tdHE, tdHD, tdTot, tdDel);
+          tbody.appendChild(tr);
+        });
+      }
+      drawLines();
+
+      table.append(thead, tbody); card.appendChild(table);
+
+      const actions = document.createElement('div'); actions.className='form-actions';
+      const addLineaBtn=document.createElement('button'); addLineaBtn.type='button'; addLineaBtn.className='btn'; addLineaBtn.textContent='+ Agregar empleado'; addLineaBtn.onclick=()=>{ d.lineas.push({ empleadoId:'', tarifaBase:0, horas:0, horasExtra:0, horasDoble:0 }); drawLines(); updateTotals(); };
+      actions.appendChild(addLineaBtn); card.appendChild(actions);
+
+      const footer=document.createElement('div'); footer.className='toolbar';
+      const totalDia=document.createElement('strong');
+      footer.append('Total del día: ', totalDia); card.appendChild(footer);
+
+      function updateTotals(){
+        const val = d.lineas.reduce((a,l)=>a+lineaTotal(l),0);
+        totalDia.textContent = fmt.money(val);
+        updateGrand();
+      }
+      updateTotals();
+
+      root.appendChild(card);
+    });
+
+    const bar=document.createElement('div'); bar.className='toolbar';
+    const grand=document.createElement('strong');
+    function updateGrand(){
+      const sum = dias.reduce((acc, dd)=> acc + dd.lineas.reduce((a,l)=> a + lineaTotal(l), 0), 0);
+      grand.textContent = fmt.money(sum);
+    }
+    bar.append('Total general: ', grand); root.appendChild(bar); updateGrand();
+  }
+
+  render();
+});
 route('#/ventas', (root) => {
   const form = document.createElement('form'); form.className='panel form-grid';
   const fecha = Field('Fecha', Input({name:'fecha', type:'date', required:true, value: today()}));
@@ -1959,6 +2050,28 @@ route('#/planillas', (root) => {
   window.addEventListener('planillas-ready', onReady);
 });
 
+route('#/resumen', (root) => {
+  const tryRender = () => {
+    if (typeof window.renderResumen === 'function') {
+      window.renderResumen(root);
+      return true;
+    }
+    return false;
+  };
+
+  if (tryRender()) return;
+
+  root.innerHTML = '<div class="card"><h3>Resumen de ventas</h3><p class="muted">Cargando resumen...</p></div>';
+  const onReady = () => {
+    if (location.hash !== '#/resumen') return;
+    if (tryRender()) {
+      window.removeEventListener('resumen-ready', onReady);
+    }
+  };
+
+  window.addEventListener('resumen-ready', onReady);
+});
+
 /* ================= BÚSQUEDA GLOBAL ================= */
 const searchBtn = $('#searchBtn');
 if (searchBtn) searchBtn.onclick = ()=> doSearch();
@@ -1991,15 +2104,7 @@ async function doSearch(){
   view.appendChild(grid);
 }
 
-/* ================= TEMA / NAV ================= */
-const themeToggle = $('#themeToggle');
-if (themeToggle) themeToggle.onclick = ()=>{
-  const root = document.documentElement;
-  root.classList.toggle('dark'); root.classList.toggle('light');
-  localStorage.setItem('theme', root.classList.contains('dark') ? 'dark' : 'light');
-};
-if (localStorage.getItem('theme')==='dark') { document.documentElement.classList.remove('light'); document.documentElement.classList.add('dark'); }
-
+/* ================= NAV ================= */
 // Navegación
 window.addEventListener('hashchange', ()=>navigate(location.hash));
 navigate(location.hash || '#/dashboard');

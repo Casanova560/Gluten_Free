@@ -1,62 +1,78 @@
 <!doctype html>
-<html lang="es" class="light">
+<html lang="es">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>GlutenFree ERP</title>
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
   <meta name="color-scheme" content="light dark" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
-<body>
+<body class="bg-slate-100 text-slate-900 antialiased">
 <noscript>Este sistema requiere JavaScript habilitado.</noscript>
 
-<div class="layout">
+<div class="flex min-h-screen">
   <!-- ========== Sidebar ========== -->
-  <aside class="sidebar" role="navigation" aria-label="Menú principal">
-    <div class="logo">
-      <span class="mark">GF</span>
-      <div class="brand">
-        <strong>GlutenFree</strong>
-        <small>ERP</small>
+  <aside class="hidden md:flex w-64 flex-col border-r border-slate-200 bg-white" role="navigation" aria-label="Menú principal">
+    <div class="flex h-16 items-center gap-3 px-6 border-b border-slate-200">
+      <span class="flex h-10 w-10 items-center justify-center rounded-full bg-indigo-600 text-lg font-bold text-white">GF</span>
+      <div class="leading-tight">
+        <strong class="block text-base">GlutenFree</strong>
+        <small class="text-slate-500">ERP</small>
       </div>
     </div>
-    <nav class="menu">
-      <a href="#/dashboard" class="item active"><span class="icon">📊</span><span>Dashboard</span></a>
-      <a href="#/uom" class="item"><span class="icon">📐</span><span>Unidades (UOM)</span></a>
-      <a href="#/productos" class="item"><span class="icon">🧩</span><span>Productos</span></a>
-      <a href="#/contactos" class="item"><span class="icon">👥</span><span>Contactos</span></a>
-      <a href="#/ventas" class="item"><span class="icon">🧾</span><span>Ventas</span></a>
-      <a href="#/compras" class="item"><span class="icon">🧾</span><span>Compras</span></a>
-      <a href="#/recetas" class="item"><span class="icon">🥣</span><span>Recetas</span></a>
-      <a href="#/produccion" class="item"><span class="icon">🏭</span><span>Producción</span></a>
-      <!-- ÚNICO CAMBIO: nueva opción de Planillas -->
-      <a href="#/planillas" class="item"><span class="icon">🗓️</span><span>Planillas</span></a>
-      <a href="#/inventario" class="item"><span class="icon">📦</span><span>Inventario</span></a>
-      <a href="#/finanzas" class="item"><span class="icon">💰</span><span>Finanzas</span></a>
-      <a href="#/rutas" class="item"><span class="icon">🗺️</span><span>Rutas</span></a>
+    <nav class="menu flex-1 overflow-y-auto px-4 py-4">
+      <div>
+        <span class="menu-label">General</span>
+        <a href="#/dashboard" class="item active flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-600"><span class="icon">📊</span><span>Dashboard</span></a>
+        <a href="#/resumen" class="item flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-600"><span class="icon">📈</span><span>Resumen ventas</span></a>
+      </div>
+      <div>
+        <span class="menu-label">Catálogos</span>
+        <a href="#/productos" class="item flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-600"><span class="icon">🧩</span><span>Productos</span></a>
+        <a href="#/contactos" class="item flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-600"><span class="icon">👥</span><span>Contactos</span></a>
+        <a href="#/uom" class="item flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-600"><span class="icon">📐</span><span>Unidades (UOM)</span></a>
+      </div>
+      <div>
+        <span class="menu-label">Comercial</span>
+        <a href="#/ventas" class="item flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-600"><span class="icon">🧾</span><span>Ventas</span></a>
+        <a href="#/compras" class="item flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-600"><span class="icon">🧾</span><span>Compras</span></a>
+        <a href="#/finanzas" class="item flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-600"><span class="icon">💰</span><span>Finanzas</span></a>
+      </div>
+      <div>
+        <span class="menu-label">Operaciones</span>
+        <a href="#/recetas" class="item flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-600"><span class="icon">🥣</span><span>Recetas</span></a>
+        <a href="#/produccion" class="item flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-600"><span class="icon">🏭</span><span>Producción</span></a>
+        <a href="#/planillas" class="item flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-600"><span class="icon">🗓️</span><span>Planillas</span></a>
+        <a href="#/inventario" class="item flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-600"><span class="icon">📦</span><span>Inventario</span></a>
+      </div>
+      <div>
+        <span class="menu-label">Logística</span>
+        <a href="#/rutas" class="item flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-600"><span class="icon">🗺️</span><span>Rutas</span></a>
+      </div>
     </nav>
-    <footer class="menu-footer">
-      <small>&copy; <span id="year"></span> GlutenFree</small>
+    <footer class="border-t border-slate-200 px-6 py-4 text-xs text-slate-500">
+      &copy; <span id="year"></span> GlutenFree
     </footer>
   </aside>
 
   <!-- ========== Main ========== -->
-  <main class="main">
-    <header class="topbar">
-      <div class="left">
-        <button id="themeToggle" class="icon-btn" title="Cambiar tema" aria-label="Cambiar tema">🌓</button>
+  <main class="flex flex-1 flex-col bg-gray-50">
+    <header class="flex h-16 items-center gap-3 border-b border-slate-200 bg-white px-6">
+      <div class="flex flex-1 items-center gap-2">
+        <div class="relative flex-1">
+          <span class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400">🔍</span>
+          <input id="globalSearch" class="w-full rounded-lg border border-slate-300 bg-white py-2 pl-10 pr-3 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500" type="search" placeholder="Buscar productos, clientes, proveedores…" aria-label="Búsqueda global" />
+        </div>
+        <button id="searchBtn" class="inline-flex items-center gap-2 rounded-lg border border-indigo-500 px-4 py-2 text-sm font-semibold text-indigo-600 transition hover:bg-indigo-50">Buscar</button>
       </div>
-      <div class="center">
-        <input id="globalSearch" class="search" type="search" placeholder="Buscar productos, clientes, proveedores…" aria-label="Búsqueda global" />
-        <button id="searchBtn" class="btn">Buscar</button>
-      </div>
-      <div class="right">
-        <button id="quickCreateBtn" class="btn-primary" aria-haspopup="dialog" aria-controls="modal">+ Crear</button>
+      <div class="flex items-center gap-2">
+        <button id="quickCreateBtn" class="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-500" aria-haspopup="dialog" aria-controls="modal">+ Crear</button>
       </div>
     </header>
 
     <!-- Aquí se renderizan las pantallas por ruta -->
-    <section id="view" class="view" role="region" aria-live="polite"></section>
+    <section id="view" class="flex-1 overflow-y-auto px-4 py-6 md:px-8" role="region" aria-live="polite"></section>
   </main>
 </div>
 
@@ -433,6 +449,7 @@
 <script src="./app.js"></script>
 <script src="./dashboard.js"></script>
 <script src="./planillas.js"></script>
+<script src="./resumen.js"></script>
 </body>
 </html>
 

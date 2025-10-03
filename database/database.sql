@@ -486,6 +486,33 @@ CREATE INDEX ix_pago_compra ON pago(compra_id);
 CREATE INDEX ix_pago_fecha ON pago(fecha);
 
 -- ======================================================================
+-- 7.1) Planillas (modelo simple por día)
+-- ======================================================================
+CREATE TABLE IF NOT EXISTS planilla_dias (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  fecha DATE NOT NULL,
+  nota VARCHAR(240),
+  creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS planilla_lineas (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  planilla_dia_id BIGINT NOT NULL,
+  empleado_id BIGINT NOT NULL,
+  tarifa_base_crc DECIMAL(18,6) NOT NULL DEFAULT 0,
+  horas DECIMAL(10,2) NOT NULL DEFAULT 0,
+  horas_extra DECIMAL(10,2) NOT NULL DEFAULT 0,
+  horas_doble DECIMAL(10,2) NOT NULL DEFAULT 0,
+  total_crc DECIMAL(18,6) NOT NULL DEFAULT 0,
+  creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_plin_dia FOREIGN KEY (planilla_dia_id) REFERENCES planilla_dias(id) ON DELETE CASCADE,
+  CONSTRAINT fk_plin_emp FOREIGN KEY (empleado_id) REFERENCES empleado(id)
+) ENGINE=InnoDB;
+
+CREATE INDEX ix_plin_dia ON planilla_lineas(planilla_dia_id);
+CREATE INDEX ix_plin_emp ON planilla_lineas(empleado_id);
+
+-- ======================================================================
 -- 8) Inventario (kardex) y merma
 -- ======================================================================
 CREATE TABLE inv_mov (
