@@ -3,6 +3,7 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from ..utils.deps import db_dep
 
@@ -26,7 +27,7 @@ def listar_ventas(
         params["hasta"] = hasta
 
     base = """
-        SELECT v.id, v.fecha, v.cliente_id, c.nombre AS cliente_nombre,
+        SELECT v.id, v.codigo_factura, v.fecha, v.cliente_id, c.nombre AS cliente_nombre,
                v.condicion_pago, v.dias_credito, v.moneda, v.nota,
                COALESCE(vt.total_crc, 0) AS total_crc
         FROM venta v
@@ -72,6 +73,7 @@ def listar_ventas(
 @router.post("")
 def crear_venta(payload: dict, db = Depends(db_dep)):
     data = {
+        "codigo_factura": (payload.get("codigo_factura") or "").strip(),
         "fecha": payload.get("fecha"),
         "cliente_id": payload.get("cliente_id"),
         "condicion_pago": payload.get("condicion_pago"),
@@ -79,13 +81,21 @@ def crear_venta(payload: dict, db = Depends(db_dep)):
         "moneda": payload.get("moneda") or "CRC",
         "nota": payload.get("nota"),
     }
+    if not data["codigo_factura"]:
+        raise HTTPException(400, "codigo_factura es obligatorio")
     if not data["fecha"] or not data["cliente_id"]:
         raise HTTPException(400, "fecha y cliente_id son obligatorios")
-    res = db.execute(text("""
-        INSERT INTO venta (fecha, cliente_id, condicion_pago, dias_credito, moneda, nota)
-        VALUES (:fecha, :cliente_id, :condicion_pago, :dias_credito, :moneda, :nota)
-    """), data)
-    db.commit()
+    try:
+        res = db.execute(text(
+            """
+            INSERT INTO venta (codigo_factura, fecha, cliente_id, condicion_pago, dias_credito, moneda, nota)
+            VALUES (:codigo_factura, :fecha, :cliente_id, :condicion_pago, :dias_credito, :moneda, :nota)
+            """
+        ), data)
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, "codigo_factura ya existe") from exc
     return {"id": res.lastrowid}
 
 

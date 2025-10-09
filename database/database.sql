@@ -256,6 +256,7 @@ CREATE TABLE compra_det (
 
 CREATE TABLE venta (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  codigo_factura VARCHAR(40) NOT NULL,
   fecha DATE NOT NULL,
   cliente_id BIGINT NOT NULL,
   moneda ENUM('CRC','USD') NOT NULL DEFAULT 'CRC',
@@ -274,7 +275,8 @@ CREATE TABLE venta (
   updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
   CONSTRAINT fk_venta_cliente FOREIGN KEY (cliente_id) REFERENCES cliente(id),
   CONSTRAINT fk_venta_ruta    FOREIGN KEY (ruta_id) REFERENCES ruta(id),
-  CONSTRAINT fk_venta_user    FOREIGN KEY (created_by) REFERENCES app_user(id)
+  CONSTRAINT fk_venta_user    FOREIGN KEY (created_by) REFERENCES app_user(id),
+  UNIQUE KEY uq_venta_codigo_factura (codigo_factura)
 ) ENGINE=InnoDB;
 
 CREATE INDEX ix_venta_fecha ON venta(fecha);
@@ -1401,6 +1403,41 @@ SET @sql := IF (
   'ALTER TABLE producto ADD COLUMN costo_estandar_crc DECIMAL(18,6) NULL AFTER precio_venta_crc;',
   'SELECT 1;'
 ); PREPARE s2 FROM @sql; EXECUTE s2; DEALLOCATE PREPARE s2;
+
+SET @sql := IF (
+  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'venta'
+     AND COLUMN_NAME = 'codigo_factura') = 0,
+  'ALTER TABLE venta ADD COLUMN codigo_factura VARCHAR(40) NULL AFTER id;',
+  'SELECT 1;'
+); PREPARE stmt_venta_add_codigo FROM @sql; EXECUTE stmt_venta_add_codigo; DEALLOCATE PREPARE stmt_venta_add_codigo;
+
+UPDATE venta
+SET codigo_factura = CASE
+    WHEN codigo_factura IS NULL OR codigo_factura = ''
+      THEN CONCAT('FAC-', LPAD(id, 6, '0'))
+    ELSE codigo_factura
+  END;
+
+SET @sql := IF (
+  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'venta'
+     AND COLUMN_NAME = 'codigo_factura'
+     AND IS_NULLABLE = 'YES') = 1,
+  'ALTER TABLE venta MODIFY COLUMN codigo_factura VARCHAR(40) NOT NULL;',
+  'SELECT 1;'
+); PREPARE stmt_venta_enforce_codigo FROM @sql; EXECUTE stmt_venta_enforce_codigo; DEALLOCATE PREPARE stmt_venta_enforce_codigo;
+
+SET @sql := IF (
+  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+   WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'venta'
+     AND INDEX_NAME = 'uq_venta_codigo_factura') = 0,
+  'ALTER TABLE venta ADD UNIQUE KEY uq_venta_codigo_factura (codigo_factura);',
+  'SELECT 1;'
+); PREPARE stmt_venta_codigo_idx FROM @sql; EXECUTE stmt_venta_codigo_idx; DEALLOCATE PREPARE stmt_venta_codigo_idx;
 
 CREATE TABLE IF NOT EXISTS config_costeo (
   id TINYINT PRIMARY KEY DEFAULT 1,

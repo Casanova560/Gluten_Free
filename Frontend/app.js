@@ -294,7 +294,7 @@ route('#/productos', (root) => {
   const btnNewMP = document.createElement('button');
   btnNewMP.className = 'btn-primary';
   btnNewMP.textContent = 'Nueva MP';
-  btnNewMP.onclick = () => openProductoModal({ tipo: 'MP' });
+  btnNewMP.onclick = () => openProductoModal({ tipo: 'MP' }, { lockTipo: true });
   const btnNewPT = document.createElement('button');
   btnNewPT.className = 'btn';
   btnNewPT.textContent = 'Nuevo PT (receta)';
@@ -384,14 +384,24 @@ route('#/productos', (root) => {
   }
   renderList();
 
-  function openProductoModal(prefill = { tipo: 'MP' }, { mode = 'create' } = {}) {
+  function openProductoModal(prefill = { tipo: 'MP' }, { mode = 'create', lockTipo = false } = {}) {
     const isEdit = mode === 'edit' && prefill && prefill.id;
     const form = document.createElement('form'); form.className='form-grid';
     const sku = Field('Código interno (SKU)', Input({name:'sku', placeholder:'Opcional', value: prefill.sku || ''}), {hint:'Si se deja vacío, se autogenera'});
     const nom = Field('Nombre', Input({name:'nombre', required:true, value: prefill.nombre || ''}));
     const tipoSel = Select({name:'tipo',items:[{id:'MP',nombre:'Materia Prima'},{id:'PT',nombre:'Producto Terminado'}], valueKey:'id'});
-    tipoSel.required = true; tipoSel.value = prefill.tipo || 'MP';
+    tipoSel.required = true;
+    tipoSel.value = prefill.tipo || 'MP';
     const tipo = Field('Tipo', tipoSel);
+    const lockTipoSelect = lockTipo || isEdit;
+    let hiddenTipo = null;
+    if (lockTipoSelect) {
+      tipoSel.disabled = true;
+      hiddenTipo = document.createElement('input');
+      hiddenTipo.type = 'hidden';
+      hiddenTipo.name = 'tipo';
+      hiddenTipo.value = tipoSel.value;
+    }
     const uom = Field('UOM base', Select({name:'uom_base_id', items:Store.state.uoms, valueKey:'id', labelKey:'nombre', required:true, value:String(prefill.uom_base_id || '')}));
     const activo = Field('Activo', (()=>{ const s=Select({name:'activo', items:[{id:1,nombre:'Si'},{id:0,nombre:'No'}], valueKey:'id'}); s.value = prefill.activo != null ? String(prefill.activo) : '1'; return s;})());
 
@@ -406,6 +416,7 @@ route('#/productos', (root) => {
     toggleTipoProducto();
 
     form.append(sku,nom,tipo,uom,costField,priceField,activo);
+    if (hiddenTipo) form.appendChild(hiddenTipo);
 
     Modal.open({
       title: isEdit ? 'Editar producto' : 'Nuevo producto',
@@ -413,6 +424,7 @@ route('#/productos', (root) => {
       content: form,
       onOk: async () => {
         const payload = Object.fromEntries(new FormData(form).entries());
+        if (lockTipoSelect && !payload.tipo) payload.tipo = prefill.tipo || tipoSel.value;
         if (!payload.sku) payload.sku = `${slug(payload.nombre).slice(0,12)}-${Math.random().toString(36).slice(2,6)}`.toUpperCase();
         payload.uom_base_id = Number(payload.uom_base_id);
         if (payload.precio_venta_crc !== undefined && payload.precio_venta_crc !== '') payload.precio_venta_crc = Number(payload.precio_venta_crc);
@@ -444,7 +456,7 @@ route('#/productos', (root) => {
     }
     if (!pending) return;
     sessionStorage.removeItem('pendingProductModal');
-    openProductoModal(pending);
+    openProductoModal(pending, { lockTipo: pending?.lockTipo ?? false });
   }
 
   if (window.__pendingProductModalHandler) {
@@ -704,20 +716,22 @@ route('#/planillas', (root) => {
 route('#/ventas', (root) => {
   const form = document.createElement('form'); form.className='panel form-grid';
   const fecha = Field('Fecha', Input({name:'fecha', type:'date', required:true, value: today()}));
+  const codigo = Field('Código factura', Input({name:'codigo_factura', required:true, placeholder:'FAC-0001'}));
   const cliente = Field('Cliente', Select({name:'cliente_id', items:Store.state.clientes, required:true}));
   const cond = Field('Condición', (()=>{ const s=Select({name:'condicion_pago', items:[{id:'CONTADO',nombre:'Contado'},{id:'CREDITO',nombre:'Crédito'}], valueKey:'id'}); s.required=true; s.value='CONTADO'; return s; })());
   const dias = Field('Días crédito', Input({name:'dias_credito', type:'number', step:'1'}));
   const nota = Field('Notas', Input({name:'nota'}));
   const actions = document.createElement('div'); actions.className='form-actions';
   const btn = document.createElement('button'); btn.type='submit'; btn.className='btn-primary'; btn.textContent='Crear venta';
-  const cancel = document.createElement('button'); cancel.type='button'; cancel.className='btn'; cancel.textContent='Cancelar'; cancel.onclick=()=>form.reset();
+  const cancel = document.createElement('button'); cancel.type='button'; cancel.className='btn'; cancel.textContent='Cancelar'; cancel.onclick=()=>{ form.reset(); ventaId = null; facturaLabel.textContent=''; lines.innerHTML=''; $('#ventaTotal').textContent = fmt.money(0); };
   actions.append(btn,cancel);
-  form.append(fecha, cliente, cond, dias, nota, actions);
+  form.append(fecha, codigo, cliente, cond, dias, nota, actions);
   root.appendChild(form);
 
   let ventaId = null;
   const itemsPanel = document.createElement('div'); itemsPanel.className='panel';
-  itemsPanel.innerHTML = `<h3>Ítems</h3>`;
+  itemsPanel.innerHTML = `<h3>Ítems</h3><p id="ventaFacturaLabel" class="muted"></p>`;
+  const facturaLabel = itemsPanel.querySelector('#ventaFacturaLabel');
   const lines = document.createElement('div'); lines.className='lines';
   const addLineBtn = document.createElement('button'); addLineBtn.type='button'; addLineBtn.textContent='+ Agregar línea';
   const totals = document.createElement('div'); totals.className='totals'; totals.innerHTML = `<b>Total:</b> <span id="ventaTotal">₡0,00</span>`;
@@ -802,10 +816,13 @@ route('#/ventas', (root) => {
   form.addEventListener('submit', async e=>{
     e.preventDefault();
     const payload = Object.fromEntries(new FormData(form).entries());
+    payload.codigo_factura = (payload.codigo_factura || '').trim();
+    if (!payload.codigo_factura) { Toast('Código de factura requerido','error'); return; }
+    payload.codigo_factura = payload.codigo_factura.toUpperCase();
     payload.moneda='CRC';
     try{
       const res = await fetchJSON(api('/ventas'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-      ventaId = res.id; Toast(`Venta #${ventaId} creada`,'success');
+      ventaId = res.id; facturaLabel.textContent = `Factura: ${payload.codigo_factura}`; Toast(`Venta ${payload.codigo_factura} creada`,'success');
     }catch(err){ Toast(err.message,'error'); }
   });
 
@@ -2136,7 +2153,7 @@ function openQuickCreate() {
 function handleQuickCreateSelection(form) {
   switch (form) {
     case 'producto-mp':
-      sessionStorage.setItem('pendingProductModal', JSON.stringify({ tipo: 'MP' }));
+      sessionStorage.setItem('pendingProductModal', JSON.stringify({ tipo: 'MP', lockTipo: true }));
       if (location.hash === '#/productos') {
         window.dispatchEvent(new CustomEvent('product-modal-pending'));
       } else {
