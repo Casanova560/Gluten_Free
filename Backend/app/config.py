@@ -10,14 +10,19 @@ class Settings:
     DB_HOST = os.getenv("DB_HOST", "localhost")
     DB_PORT = os.getenv("DB_PORT", "3306")
     DB_NAME = os.getenv("DB_NAME", "dltaller_app")
-    DB_USER = os.getenv("DB_USER", "gf_app")
-    DB_PASS = os.getenv("DB_PASS", "gf_app123!")
+    DB_USER = os.getenv("DB_USER")
+    DB_PASS = os.getenv("DB_PASS")
 
     def _build_db_url(self) -> str:
         # Permite sobrescribir con DB_URL directamente.
         explicit_url = os.getenv("DB_URL")
         if explicit_url:
             return explicit_url
+
+        if self.DB_USER is None:
+            raise RuntimeError("DB_USER environment variable is required when DB_URL is not set.")
+        if self.DB_PASS is None:
+            raise RuntimeError("DB_PASS environment variable is required when DB_URL is not set.")
 
         user = quote_plus(self.DB_USER or "")
         password = quote_plus(self.DB_PASS or "")

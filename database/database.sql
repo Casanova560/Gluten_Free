@@ -9,8 +9,17 @@ CREATE DATABASE IF NOT EXISTS dltaller_app
   DEFAULT COLLATE utf8mb4_0900_ai_ci;
 USE dltaller_app;
 
--- Usuario dedicado para la aplicación
-CREATE USER IF NOT EXISTS 'gf_app'@'localhost' IDENTIFIED BY 'gf_app123!';
+-- Usuario dedicado para la aplicacion
+-- Antes de ejecutar, define con seguridad: SET @gf_app_password = 'tu_clave_muy_segura';
+SET @gf_app_password = COALESCE(@gf_app_password, 'change_me');
+SET @create_gf_user = CONCAT(
+  "CREATE USER IF NOT EXISTS 'gf_app'@'localhost' IDENTIFIED BY '",
+  REPLACE(@gf_app_password, "'", "''"),
+  "';"
+);
+PREPARE stmt_create_gf_user FROM @create_gf_user;
+EXECUTE stmt_create_gf_user;
+DEALLOCATE PREPARE stmt_create_gf_user;
 GRANT ALL PRIVILEGES ON dltaller_app.* TO 'gf_app'@'localhost';
 FLUSH PRIVILEGES;
 
@@ -961,175 +970,22 @@ LEFT JOIN receta_salida rs ON rs.receta_id = r.id
 GROUP BY r.id;
 
 /* =========================================================
-   PATCH COSTEO (MP → Recetas → Tandas)  —  MySQL compatible
-   ========================================================= */
-USE dltaller_app;
-
--- Usuario dedicado para la aplicación
-CREATE USER IF NOT EXISTS 'gf_app'@'localhost' IDENTIFIED BY 'gf_app123!';
-GRANT ALL PRIVILEGES ON dltaller_app.* TO 'gf_app'@'localhost';
-FLUSH PRIVILEGES;
-
--- ============= 1) Agregar columnas si faltan (producto) =============
--- precio_venta_crc (para PT) y costo_estandar_crc (para MP)
-
-SET @sql := IF (
-  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
-     WHERE TABLE_SCHEMA = DATABASE()
-       AND TABLE_NAME = 'producto'
-       AND COLUMN_NAME = 'precio_venta_crc') = 0,
-  'ALTER TABLE producto ADD COLUMN precio_venta_crc DECIMAL(18,6) NULL AFTER uom_base_id;',
-  'SELECT 1;'
-);
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
-SET @sql := IF (
-  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
-     WHERE TABLE_SCHEMA = DATABASE()
-       AND TABLE_NAME = 'producto'
-       AND COLUMN_NAME = 'costo_estandar_crc') = 0,
-  'ALTER TABLE producto ADD COLUMN costo_estandar_crc DECIMAL(18,6) NULL AFTER precio_venta_crc;',
-  'SELECT 1;'
-);
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
--- ================== 2) Vistas de costo de MP ==================
--- 2.1 Último costo registrado por MP (en CRC)
-CREATE OR REPLACE VIEW v_costo_mp_ultimo AS
-SELECT
-  cd.producto_id,
-  CAST(
-    SUBSTRING_INDEX(
-      GROUP_CONCAT(cd.costo_unitario_crc ORDER BY c.fecha DESC, cd.id DESC),
-      ',', 1
-    ) AS DECIMAL(18,6)
-  ) AS costo_unitario_crc
-FROM compra_det cd
-JOIN compra c ON c.id = cd.compra_id
-GROUP BY cd.producto_id;
-
--- 2.2 Promedio ponderado histórico por MP
-CREATE OR REPLACE VIEW v_costo_mp_promedio AS
-SELECT
-  cd.producto_id,
-  CASE
-    WHEN SUM(cd.cantidad) > 0
-      THEN CAST(SUM(cd.costo_unitario_crc * cd.cantidad) / SUM(cd.cantidad) AS DECIMAL(18,6))
-    ELSE NULL
-  END AS costo_unitario_crc
-FROM compra_det cd
-GROUP BY cd.producto_id;
-
--- 2.3 Costo “actual” por MP: último -> promedio -> costo_estandar -> 0
-CREATE OR REPLACE VIEW v_costo_mp_actual AS
-SELECT
-  p.id AS producto_id,
-  COALESCE(u.costo_unitario_crc, pr.costo_unitario_crc, p.costo_estandar_crc, 0) AS costo_unitario_crc
-FROM producto p
-LEFT JOIN v_costo_mp_ultimo   u  ON u.producto_id = p.id
-LEFT JOIN v_costo_mp_promedio pr ON pr.producto_id = p.id
-WHERE p.tipo = 'MP';
-
--- ================= 3) Vistas de costeo de receta =================
--- 3.1 Detalle por ingrediente (usa costo actual de MP)
-CREATE OR REPLACE VIEW v_receta_costeo_det AS
-SELECT
-  r.id            AS receta_id,
-  rd.id           AS receta_det_id,
-  rd.producto_id,
-  p.nombre        AS producto_nombre,
-  rd.uom_id,
-  u.nombre        AS uom_nombre,
-  rd.cantidad,
-  ca.costo_unitario_crc,
-  CAST(rd.cantidad * ca.costo_unitario_crc AS DECIMAL(18,6)) AS costo_total_crc
-FROM receta_det rd
-JOIN receta   r   ON r.id = rd.receta_id
-JOIN producto p   ON p.id = rd.producto_id
-JOIN uom     u    ON u.id = rd.uom_id
-LEFT JOIN v_costo_mp_actual ca ON ca.producto_id = rd.producto_id;
-
--- 3.2 Rendimiento total de receta (sumando salidas)
-CREATE OR REPLACE VIEW v_receta_rendimiento AS
-SELECT
-  rs.receta_id,
-  SUM(rs.rendimiento) AS rendimiento_total
-FROM receta_salida rs
-GROUP BY rs.receta_id;
-
--- 3.3 Totales (directo y unitario estimado por rendimiento)
-CREATE OR REPLACE VIEW v_receta_costeo_totales AS
-SELECT
-  d.receta_id,
-  CAST(SUM(d.costo_total_crc) AS DECIMAL(18,6)) AS costo_directo_crc,
-  r.rendimiento_total,
-  CASE
-    WHEN r.rendimiento_total IS NOT NULL AND r.rendimiento_total > 0
-      THEN CAST(SUM(d.costo_total_crc) / r.rendimiento_total AS DECIMAL(18,6))
-    ELSE NULL
-  END AS unitario_estimado_crc
-FROM v_receta_costeo_det d
-LEFT JOIN v_receta_rendimiento r ON r.receta_id = d.receta_id
-GROUP BY d.receta_id, r.rendimiento_total;
-
--- ============= 4) Función costo MP “a la fecha” (para tandas) =============
--- (Sin OR REPLACE; se hace DROP + CREATE. Con DELIMITER y READS SQL DATA)
-
-DROP FUNCTION IF EXISTS fn_costo_mp_al;
-DELIMITER $$
-
-CREATE FUNCTION fn_costo_mp_al(fecha_ref DATE, mp_id BIGINT)
-RETURNS DECIMAL(18,6)
-DETERMINISTIC
-READS SQL DATA
-BEGIN
-  DECLARE v_costo DECIMAL(18,6) DEFAULT NULL;
-  -- último costo con fecha <= fecha_ref
-  SELECT cd.costo_unitario_crc
-    INTO v_costo
-  FROM compra_det cd
-  JOIN compra c ON c.id = cd.compra_id
-  WHERE cd.producto_id = mp_id
-    AND c.fecha <= fecha_ref
-  ORDER BY c.fecha DESC, cd.id DESC
-  LIMIT 1;
-  IF v_costo IS NULL THEN
-    -- fallback: costo_estandar del producto
-    SELECT p.costo_estandar_crc
-      INTO v_costo
-    FROM producto p
-    WHERE p.id = mp_id
-    LIMIT 1;
-  END IF;
-  RETURN IFNULL(v_costo, 0);
-END $$
-DELIMITER ;
-
--- ==================== 5) (Opcional) Ejemplo de uso ====================
--- Costeo de una tanda puntual por fecha (para endpoints/reporte):
--- SELECT
---   t.id AS tanda_id,
---   tc.producto_id,
---   p.nombre AS producto_nombre,
---   tc.uom_id,
---   u.nombre AS uom_nombre,
---   tc.cantidad,
---   fn_costo_mp_al(t.fecha, tc.producto_id) AS costo_unitario_crc,
---   CAST(tc.cantidad * fn_costo_mp_al(t.fecha, tc.producto_id) AS DECIMAL(18,6)) AS costo_total_crc
--- FROM tanda t
--- JOIN tanda_consumo tc ON tc.tanda_id = t.id
--- JOIN producto p ON p.id = tc.producto_id
--- JOIN uom u ON u.id = tc.uom_id
--- WHERE t.id = 123;  -- reemplazar por la tanda a analizar
-
-/* =========================================================
    PATCH sobre esquema existente (MySQL 8)
    Añade columnas, vistas, función y triggers de flujo/costeo
    ========================================================= */
 USE dltaller_app;
 
--- Usuario dedicado para la aplicación
-CREATE USER IF NOT EXISTS 'gf_app'@'localhost' IDENTIFIED BY 'gf_app123!';
+-- Usuario dedicado para la aplicacion
+-- Antes de ejecutar, define con seguridad: SET @gf_app_password = 'tu_clave_muy_segura';
+SET @gf_app_password = COALESCE(@gf_app_password, 'change_me');
+SET @create_gf_user = CONCAT(
+  "CREATE USER IF NOT EXISTS 'gf_app'@'localhost' IDENTIFIED BY '",
+  REPLACE(@gf_app_password, "'", "''"),
+  "';"
+);
+PREPARE stmt_create_gf_user FROM @create_gf_user;
+EXECUTE stmt_create_gf_user;
+DEALLOCATE PREPARE stmt_create_gf_user;
 GRANT ALL PRIVILEGES ON dltaller_app.* TO 'gf_app'@'localhost';
 FLUSH PRIVILEGES;
 
@@ -1385,24 +1241,6 @@ BEGIN
 END$$
 
 DELIMITER ;
-
-SET @sql := IF (
-  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
-   WHERE TABLE_SCHEMA = DATABASE()
-     AND TABLE_NAME = 'producto'
-     AND COLUMN_NAME = 'precio_venta_crc') = 0,
-  'ALTER TABLE producto ADD COLUMN precio_venta_crc DECIMAL(18,6) NULL AFTER uom_base_id;',
-  'SELECT 1;'
-); PREPARE s1 FROM @sql; EXECUTE s1; DEALLOCATE PREPARE s1;
-
-SET @sql := IF (
-  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
-   WHERE TABLE_SCHEMA = DATABASE()
-     AND TABLE_NAME = 'producto'
-     AND COLUMN_NAME = 'costo_estandar_crc') = 0,
-  'ALTER TABLE producto ADD COLUMN costo_estandar_crc DECIMAL(18,6) NULL AFTER precio_venta_crc;',
-  'SELECT 1;'
-); PREPARE s2 FROM @sql; EXECUTE s2; DEALLOCATE PREPARE s2;
 
 SET @sql := IF (
   (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
