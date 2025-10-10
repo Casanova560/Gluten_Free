@@ -6,7 +6,8 @@ from urllib.parse import quote_plus
 class Settings:
     """Centraliza configuración de la aplicación."""
 
-    DB_DRIVER = os.getenv("DB_DRIVER", "mysql+mysqlconnector")
+    # Default to PyMySQL, which is present in requirements.txt
+    DB_DRIVER = os.getenv("DB_DRIVER", "mysql+pymysql")
     DB_HOST = os.getenv("DB_HOST", "localhost")
     DB_PORT = os.getenv("DB_PORT", "3306")
     DB_NAME = os.getenv("DB_NAME", "dltaller_app")

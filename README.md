@@ -27,13 +27,21 @@ La aplicación no arranca si `DB_USER` o `DB_PASS` están vacíos y no definiste
 
 ## 2. Preparar la base de datos MySQL
 
-1. Crea una sesión con un usuario con permisos de administración.
-2. Antes de ejecutar el script SQL, define la contraseña que asignarás al usuario `gf_app`:
+1. Con un usuario administrador (por ejemplo `root`), abre una sesion en MySQL desde la carpeta raiz del repositorio:
+   ```bash
+   cd "/ruta/a/Gluten Free 3"
+   mysql -u root -p
+   ```
+2. Ejecuta el script principal y luego el de datos demo dentro de la consola `mysql`:
    ```sql
    SET @gf_app_password = 'TuClaveMuySegura';
    SOURCE database/database.sql;
+   SOURCE database/seed_demo.sql;
    ```
-3. Si ya tienes el esquema y solo quieres aplicar el patch incremental, ejecuta la sección de “PATCH sobre esquema existente” del mismo archivo (mismo paso previo de `SET @gf_app_password`).
+   - `database.sql` crea el esquema completo y el usuario `gf_app` usando la contrasena que definiste en `@gf_app_password`.
+   - `seed_demo.sql` carga catalogos basicos, una receta de ejemplo y movimientos de compra/venta pensados para hacer pruebas. Puedes relanzarlo sin duplicar filas.
+   - Si prefieres MySQL Workbench: ejecuta la sentencia `SET`, luego `database.sql` y por ultimo `seed_demo.sql` sobre la misma conexion.
+3. Si ya tienes el esquema y solo quieres aplicar el patch incremental, usa la seccion "PATCH sobre esquema existente" de `database/database.sql` (recuerda definir `@gf_app_password` antes de esa ejecucion).
 
 ## 3. Levantar el backend
 
@@ -44,6 +52,24 @@ uvicorn app.main:app --reload --app-dir Backend
 ```
 
 La API quedará disponible en `http://localhost:8000`.
+
+### Ejecutar con variables de entorno desde la terminal
+
+Si prefieres no usar el archivo `.env`, exporta las credenciales justo antes de correr el servidor:
+
+```powershell
+# PowerShell
+$env:DB_USER = 'gf_app'
+$env:DB_PASS = 'TuClaveMuySegura'
+uvicorn app.main:app --reload --app-dir Backend
+```
+
+```bash
+# Bash / Zsh
+export DB_USER=gf_app
+export DB_PASS=TuClaveMuySegura
+uvicorn app.main:app --reload --app-dir Backend
+```
 
 ## 4. Servir el frontend
 

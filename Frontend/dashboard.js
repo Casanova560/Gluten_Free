@@ -116,43 +116,6 @@
     return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
   };
 
-  const aggregateVentasPorProducto = (ventas) => {
-    const grouped = new Map();
-    (ventas || []).forEach((venta) => {
-      const items = venta?.items || venta?.detalles || venta?.lineas || [];
-      items.forEach((item) => {
-        const key = item?.producto_id ?? item?.producto_nombre ?? item?.nombre ?? 'desconocido';
-        const nombre = item?.producto_nombre || item?.nombre || item?.producto || `Producto ${key}`;
-        const row = grouped.get(key) || { nombre, cantidad: 0, total: 0 };
-        row.nombre = nombre;
-        row.cantidad += toNumber(item?.cantidad ?? item?.qty ?? item?.unidades);
-        const totalItem = toNumber(item?.total_crc ?? item?.total ?? item?.subtotal);
-        if (totalItem > 0) {
-          row.total += totalItem;
-        } else {
-          const precio = toNumber(item?.precio_unitario_crc ?? item?.precio_unitario ?? item?.precio);
-          row.total += precio * toNumber(item?.cantidad ?? item?.qty ?? item?.unidades);
-        }
-        grouped.set(key, row);
-      });
-    });
-    return Array.from(grouped.values()).sort((a, b) => b.total - a.total);
-  };
-
-  const aggregateVentasPorCliente = (ventas) => {
-    const grouped = new Map();
-    (ventas || []).forEach((venta) => {
-      const key = venta?.cliente_id ?? venta?.cliente_nombre ?? venta?.cliente ?? 'desconocido';
-      const nombre = venta?.cliente_nombre || venta?.cliente || `Cliente ${key}`;
-      const row = grouped.get(key) || { nombre, ventas: 0, total: 0 };
-      row.nombre = nombre;
-      row.ventas += 1;
-      row.total += ventaTotal(venta);
-      grouped.set(key, row);
-    });
-    return Array.from(grouped.values()).sort((a, b) => b.total - a.total);
-  };
-
   const renderTrendChart = (target, { ventas, compras, gastos }) => {
     if (!target) return;
     const ventasMes = aggregateByMonth(ventas, (v) => v?.fecha || v?.fecha_emision || v?.created_at || v?.createdAt, ventaTotal);
@@ -194,64 +157,36 @@
     });
   };
 
-  const renderTopProductosChart = (target, ventas) => {
+  const renderIndicadores = (target, { ventas, compras, gastos, planillas }) => {
     if (!target) return;
-    const rows = aggregateVentasPorProducto(ventas).slice(0, 8);
-    if (!rows.length) {
-      setEmpty(target, 'No hay ventas registradas en el rango.');
+    const hasData = (ventas && ventas.length) || (compras && compras.length) || (gastos && gastos.length) || (planillas && planillas.length);
+    if (!hasData) {
+      setEmpty(target, 'Sin datos suficientes para indicadores.');
       return;
     }
-    createChart('productos', target, 'bar', {
-      data: {
-        labels: rows.map((row) => row.nombre),
-        datasets: [{
-          label: 'Total vendido (CRC)',
-          data: rows.map((row) => row.total),
-          backgroundColor: '#38bdf8'
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-          x: {
-            ticks: {
-              callback: (value, idx) => fmt.money(rows[idx].total)
-            }
-          }
-        },
-        plugins: {
-          legend: { display: false }
-        }
-      }
-    });
-  };
+    const totalVentas = sumBy(ventas, ventaTotal);
+    const totalCompras = sumBy(compras, compraTotal);
+    const totalGastos = sumBy(gastos, (g) => toNumber(g?.monto_crc ?? g?.monto ?? 0));
+    const totalPlanillas = sumBy(planillas, planillaTotal);
+    const totalOperativo = totalGastos + totalPlanillas;
+    const margenBruto = totalVentas - totalCompras;
+    const margenOperativo = totalVentas - totalCompras - totalOperativo;
+    const ventasCount = Array.isArray(ventas) ? ventas.length : 0;
+    const avgTicket = ventasCount ? totalVentas / ventasCount : 0;
+    const money = (value) => (window.fmt && typeof fmt.money === 'function') ? fmt.money(value || 0) : `CRC ${Number(value || 0).toFixed(2)}`;
+    const pct = (value, base) => {
+      if (!base) return 'N/D';
+      return `${((value / base) * 100).toFixed(1)}%`;
+    };
 
-  const renderTopClientesChart = (target, ventas) => {
-    if (!target) return;
-    const rows = aggregateVentasPorCliente(ventas).slice(0, 8);
-    if (!rows.length) {
-      setEmpty(target, 'No hay ventas asociadas a clientes en el rango.');
-      return;
-    }
-    createChart('clientes', target, 'bar', {
-      data: {
-        labels: rows.map((row) => row.nombre),
-        datasets: [{
-          label: 'Total facturado (CRC)',
-          data: rows.map((row) => row.total),
-          backgroundColor: '#a855f7'
-        }]
-      },
-      options: {
-        indexAxis: 'y',
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false }
-        }
-      }
-    });
+    target.innerHTML = `
+      <p><strong>Ingresos totales:</strong> ${money(totalVentas)}</p>
+      <p><strong>Margen bruto:</strong> ${money(margenBruto)} (${pct(margenBruto, totalVentas)})</p>
+      <p><strong>Margen operativo:</strong> ${money(margenOperativo)} (${pct(margenOperativo, totalVentas)})</p>
+      <p><strong>Gasto operativo:</strong> ${money(totalOperativo)} (${pct(totalOperativo, totalVentas)})</p>
+      <p><strong>Ticket promedio:</strong> ${ventasCount ? money(avgTicket) : 'N/D'}</p>
+      <p><strong>Ventas procesadas:</strong> ${ventasCount}</p>
+    `;
   };
 
   const renderPlanillasChart = (target, summaryEl, planillas) => {
@@ -363,11 +298,8 @@
     const ventasTrendCard = buildCard('Evolucion de ventas, compras y gastos');
     const trendArea = document.createElement('div'); trendArea.className = 'chart-area'; ventasTrendCard.body.appendChild(trendArea);
 
-    const productosCard = buildCard('Top productos vendidos');
-    const productosArea = document.createElement('div'); productosArea.className = 'chart-area'; productosCard.body.appendChild(productosArea);
-
-    const clientesCard = buildCard('Clientes mas relevantes');
-    const clientesArea = document.createElement('div'); clientesArea.className = 'chart-area'; clientesCard.body.appendChild(clientesArea);
+    const indicadoresCard = buildCard('Indicadores clave');
+    const indicadoresArea = document.createElement('div'); indicadoresArea.className = 'kpi-area'; indicadoresCard.body.appendChild(indicadoresArea);
 
     const planillasCard = buildCard('Planillas semanales');
     const planillasArea = document.createElement('div'); planillasArea.className = 'chart-area';
@@ -378,8 +310,7 @@
 
     cardsWrap.append(
       ventasTrendCard.card,
-      productosCard.card,
-      clientesCard.card,
+      indicadoresCard.card,
       planillasCard.card,
       contabilidadCard.card
     );
@@ -394,8 +325,7 @@
       const hasta = hastaInput.value;
 
       setLoading(trendArea);
-      setLoading(productosArea);
-      setLoading(clientesArea);
+      setLoading(indicadoresArea);
       setLoading(planillasArea);
       setLoading(contabilidadCard.body);
       planillasSummary.innerHTML = '';
@@ -446,16 +376,14 @@
         });
 
         renderTrendChart(trendArea, { ventas, compras, gastos: gastosFiltrados });
-        renderTopProductosChart(productosArea, ventas);
-        renderTopClientesChart(clientesArea, ventas);
+        renderIndicadores(indicadoresArea, { ventas, compras, gastos: gastosFiltrados, planillas });
         renderPlanillasChart(planillasArea, planillasSummary, planillas);
         renderContabilidad(contabilidadCard.body, { ventas, compras, mermas, planillas, gastos: gastosFiltrados, cxc: cxcRaw, cxp: cxpRaw });
       } catch (error) {
         if (token !== currentToken) return;
         console.error(error);
         setEmpty(trendArea, 'No se pudo cargar la informacion.');
-        setEmpty(productosArea, 'No se pudo cargar la informacion.');
-        setEmpty(clientesArea, 'No se pudo cargar la informacion.');
+        setEmpty(indicadoresArea, 'No se pudo cargar la informacion.');
         setEmpty(planillasArea, 'No se pudo cargar la informacion.');
         setEmpty(contabilidadCard.body, 'No se pudo cargar la informacion.');
         Toast('No se pudo cargar el dashboard', 'error');
